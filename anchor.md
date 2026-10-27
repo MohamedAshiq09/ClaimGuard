@@ -22,7 +22,7 @@
   - EVM RPC (HTTP): `https://test-evm-rpc-v3.portaldot.dev` (Chain ID: `420420777` / `0x190f1ca9`, Client: `eth-rpc/main-fddd431`)
   - Explorer: `https://node-console.portaldot.dev/`
   - Faucet / Test Tokens: SS58 native POT address (starting with `5`) requested via Discord support ticket or admins `@Stella707827` / `@titus242471`.
-- [x] **Docs & PRD Synchronized**: Combined Project Document written to `docs/README.md`.
+- [x] **Docs & PRD Synchronized**: Combined Project Document saved to `docs/complete_idea.md` and root `README.md` created.
 - [x] **Repository Layout Defined**: Full directory structure created per Section 10.
 - [x] **Scaffolding**: `claimguard_core` contract scaffolded with Rust/ink!, types, storage, and error definitions.
 
@@ -281,6 +281,7 @@ console.log(`Current advance rate: ${status.currentAdvanceRatePct}%`);
 
 ```text
 ClaimGuard/
+├── README.md                          # Universal Project Overview & Quickstart
 ├── anchor.md                          # Single source of truth (this document)
 ├── .env.example                       # Environment variables template
 ├── .env                               # Local secrets (ignored by git)
@@ -317,7 +318,7 @@ ClaimGuard/
 │   ├── src/
 │   └── public/
 └── docs/
-    ├── README.md                      # Full Combined Project Document
+    ├── complete_idea.md               # Full Combined Project Document
     └── Bonded RWA Invariants PRD...md # PRD reference
 ```
 

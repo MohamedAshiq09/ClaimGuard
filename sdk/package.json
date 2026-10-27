@@ -1,0 +1,29 @@
+{
+  "name": "@claimguard/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for ClaimGuard: Compliance and lien state that travels with the asset",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"No tests yet\""
+  },
+  "keywords": [
+    "claimguard",
+    "rwa",
+    "portaldot",
+    "ink",
+    "trade-finance",
+    "lien-registry"
+  ],
+  "author": "ClaimGuard Team",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@polkadot/api": "^15.0.1",
+    "@polkadot/api-contract": "^15.0.1",
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

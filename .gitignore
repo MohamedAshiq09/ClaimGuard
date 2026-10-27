@@ -1,0 +1,25 @@
+# Environments
+.env
+.env.local
+*.env
+
+# Rust & Cargo
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Node / JS
+node_modules/
+dist/
+build/
+.npm/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

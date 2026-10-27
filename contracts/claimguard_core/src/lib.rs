@@ -36,13 +36,17 @@ mod claimguard_core {
         pub authorized_verifiers: Mapping<AccountId, bool>,
     }
 
+    impl Default for ClaimGuardCore {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl ClaimGuardCore {
         /// Constructor initializes the registry with caller as owner.
         #[ink(constructor)]
         pub fn new() -> Self {
             let caller = Self::env().caller();
-            let mut authorized_verifiers = Mapping::default();
-            authorized_verifiers.insert(caller, &true);
 
             Self {
                 owner: caller,
@@ -52,7 +56,7 @@ mod claimguard_core {
                 liens: Mapping::default(),
                 claim_lien_count: Mapping::default(),
                 snapshot_nonce: Mapping::default(),
-                authorized_verifiers,
+                authorized_verifiers: Mapping::default(),
             }
         }
 
@@ -221,12 +225,8 @@ mod claimguard_core {
             let mut claim = self.claims.get(claim_id).ok_or(Error::ClaimNotFound)?;
             let current_time = self.env().block_timestamp();
 
-            // Authorization: issuer or approved contract
-            if caller != claim.issuer
-                && caller != lender
-                && caller != self.owner
-                && !self.authorized_verifiers.get(caller).unwrap_or(false)
-            {
+            // Authorization: issuer or lender
+            if caller != claim.issuer && caller != lender {
                 return Err(Error::Unauthorized);
             }
 
@@ -710,5 +710,206 @@ mod claimguard_core {
             let expired_pledge = contract.pledge(claim_id, accounts.eve, 100_000);
             assert_eq!(expired_pledge, Err(Error::ClaimPastMaturity));
         }
+
+        #[ink::test]
+        fn test_unauthorized_callers() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            // Alice registers claim with Bob as buyer
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [5u8; 32],
+                    8000,
+                    *b"IN",
+                )
+                .unwrap();
+
+            // Charlie (unauthorized) tries to acknowledge
+            set_caller(accounts.charlie);
+            assert_eq!(contract.acknowledge(claim_id), Err(Error::Unauthorized));
+
+            // Bob acknowledges
+            set_caller(accounts.bob);
+            assert_eq!(contract.acknowledge(claim_id), Ok(()));
+
+            // Charlie (unauthorized stranger) tries to pledge
+            set_caller(accounts.charlie);
+            let pledge_res = contract.pledge(claim_id, accounts.eve, 100_000);
+            assert_eq!(pledge_res, Err(Error::Unauthorized));
+
+            // Alice (legitimate issuer) pledges to Eve
+            set_caller(accounts.alice);
+            let lien_id = contract.pledge(claim_id, accounts.eve, 100_000).unwrap();
+
+            // Charlie tries to release Eve's lien
+            set_caller(accounts.charlie);
+            assert_eq!(contract.release(claim_id, lien_id), Err(Error::Unauthorized));
+
+            // Charlie tries to transfer Alice's claim
+            assert_eq!(
+                contract.transfer_claim(claim_id, accounts.charlie, *b"IN"),
+                Err(Error::Unauthorized)
+            );
+        }
+
+        #[ink::test]
+        fn test_transfer_and_subsequent_pledge() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            // Alice registers claim
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [6u8; 32],
+                    8000,
+                    *b"IN",
+                )
+                .unwrap();
+
+            // Transfer to Charlie (same jurisdiction "IN")
+            let transfer_res = contract.transfer_claim(claim_id, accounts.charlie, *b"IN");
+            assert_eq!(transfer_res, Ok(()));
+
+            let claim = contract.get_claim(claim_id).unwrap();
+            assert_eq!(claim.issuer, accounts.charlie);
+
+            // Bob acknowledges
+            set_caller(accounts.bob);
+            contract.acknowledge(claim_id).unwrap();
+
+            // Charlie (the new owner) pledges to Eve
+            set_caller(accounts.charlie);
+            let lien_id = contract.pledge(claim_id, accounts.eve, 400_000).unwrap();
+            assert_eq!(lien_id, 1);
+            assert_eq!(contract.get_total_pledged(claim_id), 400_000);
+
+            // Old owner Alice tries to pledge -> fails
+            set_caller(accounts.alice);
+            assert_eq!(
+                contract.pledge(claim_id, accounts.frank, 100_000),
+                Err(Error::Unauthorized)
+            );
+        }
+
+        #[ink::test]
+        fn test_disallowed_jurisdiction_transfer() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            // Claim registered with allowed_jurisdiction = "IN"
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [7u8; 32],
+                    8000,
+                    *b"IN",
+                )
+                .unwrap();
+
+            // Attempt transfer to "US" jurisdiction entity
+            let transfer_res = contract.transfer_claim(claim_id, accounts.charlie, *b"US");
+            assert_eq!(transfer_res, Err(Error::DisallowedJurisdiction));
+        }
+
+        #[ink::test]
+        fn test_bonded_verification_rejection_blocks_pledge() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            // Contract owner is accounts.alice (since alice called new())
+            // Register claim
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [8u8; 32],
+                    8000,
+                    *b"IN",
+                )
+                .unwrap();
+
+            // Buyer acknowledges
+            set_caller(accounts.bob);
+            contract.acknowledge(claim_id).unwrap();
+
+            // Verification layer disputes and marks claim Rejected
+            set_caller(accounts.alice);
+            contract
+                .set_verification(claim_id, VerificationStatus::Rejected)
+                .unwrap();
+
+            let claim = contract.get_claim(claim_id).unwrap();
+            assert_eq!(claim.verification, VerificationStatus::Rejected);
+
+            // Any pledge attempt must now be strictly blocked!
+            let pledge_res = contract.pledge(claim_id, accounts.eve, 500_000);
+            assert_eq!(pledge_res, Err(Error::ClaimRejected));
+        }
+
+        #[ink::test]
+        fn test_export_snapshot_and_validation() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [9u8; 32],
+                    8000,
+                    *b"IN",
+                )
+                .unwrap();
+
+            // Zero amount registration rejected
+            let zero_res = contract.register_claim(
+                accounts.bob,
+                0,
+                *b"INR\0",
+                90_000,
+                [10u8; 32],
+                8000,
+                *b"IN",
+            );
+            assert_eq!(zero_res, Err(Error::ZeroAmount));
+
+            // Export first snapshot
+            let s1 = contract.export_snapshot(claim_id, 3600).unwrap();
+            assert_eq!(s1.nonce, 1);
+            assert_eq!(s1.timestamp, 1_000);
+            assert_eq!(s1.expiry, 4_600);
+            assert_eq!(s1.total_pledged, 0);
+
+            // Export second snapshot - nonce increments
+            let s2 = contract.export_snapshot(claim_id, 7200).unwrap();
+            assert_eq!(s2.nonce, 2);
+            assert_eq!(s2.expiry, 8_200);
+        }
     }
 }
+

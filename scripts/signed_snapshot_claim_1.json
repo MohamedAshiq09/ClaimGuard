@@ -1,0 +1,17 @@
+{
+  "snapshot": {
+    "claimId": "1",
+    "status": "Settled",
+    "verification": "Verified",
+    "faceValue": "1000000",
+    "totalPledged": "0",
+    "maxAdvanceRateBps": 8000,
+    "requireVerified": true,
+    "nonce": "1",
+    "timestamp": "1793284187831",
+    "expiry": "1793291387831"
+  },
+  "signature": "0x62f763b6708a502347efe55886f84db96849c66a2ee96e25ebf0f111531ed4623ed1dd45997c83cf9241ea4a4999cbb2a102de1c2a107284c064de07ccafc58a",
+  "signer": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+  "snapshotHash": "0xf44f22130e733971c8c813c9d3c32a75a1aa853024c53ddcb423d56e759e2557"
+}

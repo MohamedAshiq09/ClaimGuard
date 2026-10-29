@@ -1,7 +1,8 @@
 import { ApiPromise, WsProvider } from "@polkadot/api";
 import { Keyring } from "@polkadot/keyring";
 import { ContractPromise } from "@polkadot/api-contract";
-import { cryptoWaitReady } from "@polkadot/util-crypto";
+import { cryptoWaitReady, signatureVerify, blake2AsHex } from "@polkadot/util-crypto";
+import { stringToU8a, u8aToHex } from "@polkadot/util";
 import {
   Assertion,
   AssertionId,
@@ -13,6 +14,8 @@ import {
   InvariantCheckResult,
   Lien,
   LienStatus,
+  SignedSnapshot,
+  SnapshotVerificationResult,
   VerificationStatus,
   ViolationLogEntry,
 } from "./types";
@@ -307,6 +310,191 @@ export class ClaimGuard {
     return [...this.violationLog];
   }
 
+  /**
+   * 5. Export cryptographic state snapshot for cross-chain relaying.
+   */
+  async exportSnapshot(
+    claimId: ClaimId,
+    validityDuration: number = 3600
+  ): Promise<ClaimSnapshot> {
+    if (this.contract && this.api) {
+      const gasLimit: any = this.api.registry.createType("WeightV2", {
+        refTime: 300_000_000_000n,
+        proofSize: 1_000_000n,
+      });
+      const caller = this.getSignerAddress();
+      const res = await this.contract.query.exportSnapshot(
+        caller,
+        { gasLimit },
+        claimId,
+        validityDuration * 1000
+      );
+
+      const human = (res.output?.toHuman() as any)?.Ok;
+      if (human && human.Ok) {
+        const snap = human.Ok;
+        return {
+          claimId,
+          status: snap.status as ClaimStatus,
+          verification: snap.verification as VerificationStatus,
+          faceValue: BigInt(snap.faceValue.toString().replace(/,/g, "")),
+          totalPledged: BigInt(snap.totalPledged.toString().replace(/,/g, "")),
+          maxAdvanceRateBps: Number(snap.maxAdvanceRateBps.toString().replace(/,/g, "")),
+          requireVerified: snap.requireVerified,
+          nonce: BigInt(snap.nonce.toString().replace(/,/g, "")),
+          timestamp: BigInt(snap.timestamp.toString().replace(/,/g, "")),
+          expiry: BigInt(snap.expiry.toString().replace(/,/g, "")),
+        };
+      }
+    }
+
+    // Client fallback snapshot
+    const status = await this.getLienStatus(claimId);
+    const now = BigInt(Date.now());
+    return {
+      claimId,
+      status: status.status,
+      verification: status.verification,
+      faceValue: status.faceValue,
+      totalPledged: status.totalPledged,
+      maxAdvanceRateBps: status.maxAdvanceRatePct * 100,
+      requireVerified: status.requireVerified,
+      nonce: 1n,
+      timestamp: now,
+      expiry: now + BigInt(validityDuration * 1000),
+    };
+  }
+
+  /**
+   * 6. Sign state snapshot with authorized Relayer keypair.
+   */
+  signSnapshot(snapshot: ClaimSnapshot, customSigner?: any): SignedSnapshot {
+    const signer = customSigner || this.signer;
+    if (!signer) {
+      throw new Error("No signer available to sign snapshot");
+    }
+
+    const payload = ClaimGuard.getCanonicalPayload(snapshot);
+    const snapshotHash = blake2AsHex(stringToU8a(payload), 256);
+    const signatureU8a = signer.sign(stringToU8a(snapshotHash));
+    const signature = u8aToHex(signatureU8a);
+
+    return {
+      snapshot,
+      signature,
+      signer: signer.address,
+      snapshotHash,
+    };
+  }
+
+  /**
+   * 7. Canonical serialization for determinism across environments.
+   */
+  static getCanonicalPayload(snapshot: ClaimSnapshot): string {
+    return [
+      snapshot.claimId.toString(),
+      snapshot.status,
+      snapshot.verification,
+      snapshot.faceValue.toString(),
+      snapshot.totalPledged.toString(),
+      snapshot.maxAdvanceRateBps.toString(),
+      snapshot.requireVerified ? "1" : "0",
+      snapshot.nonce.toString(),
+      snapshot.timestamp.toString(),
+      snapshot.expiry.toString(),
+    ].join(":");
+  }
+
+  /**
+   * 8. Verify a signed snapshot (for destination chains / Lender B).
+   */
+  static async verifySnapshot(
+    signedSnapshot: SignedSnapshot,
+    trustedSignerAddress: string,
+    lastSeenNonce: bigint = 0n
+  ): Promise<SnapshotVerificationResult> {
+    await cryptoWaitReady();
+    const { snapshot, signature, signer, snapshotHash } = signedSnapshot;
+
+    // 1. Replay payload hash verification
+    const expectedPayload = ClaimGuard.getCanonicalPayload(snapshot);
+    const computedHash = blake2AsHex(stringToU8a(expectedPayload), 256);
+    if (computedHash !== snapshotHash) {
+      return {
+        valid: false,
+        reason: "Snapshot payload hash mismatch (tampered data)",
+        remainingCapacity: 0n,
+        isAlreadyPledged: true,
+        status: snapshot.status,
+        verification: snapshot.verification,
+      };
+    }
+
+    // 2. Cryptographic signature check
+    if (signer !== trustedSignerAddress) {
+      return {
+        valid: false,
+        reason: `Untrusted signer: ${signer} (expected ${trustedSignerAddress})`,
+        remainingCapacity: 0n,
+        isAlreadyPledged: true,
+        status: snapshot.status,
+        verification: snapshot.verification,
+      };
+    }
+
+    const sigCheck = signatureVerify(stringToU8a(snapshotHash), signature, trustedSignerAddress);
+    if (!sigCheck.isValid) {
+      return {
+        valid: false,
+        reason: "Invalid cryptographic signature",
+        remainingCapacity: 0n,
+        isAlreadyPledged: true,
+        status: snapshot.status,
+        verification: snapshot.verification,
+      };
+    }
+
+    // 3. Expiry / Freshness check
+    const now = BigInt(Date.now());
+    if (now > snapshot.expiry) {
+      return {
+        valid: false,
+        reason: `Snapshot expired at ${snapshot.expiry} (current: ${now})`,
+        remainingCapacity: 0n,
+        isAlreadyPledged: true,
+        status: snapshot.status,
+        verification: snapshot.verification,
+      };
+    }
+
+    // 4. Nonce / Replay protection check
+    if (snapshot.nonce <= lastSeenNonce) {
+      return {
+        valid: false,
+        reason: `Replay attack detected: snapshot nonce ${snapshot.nonce} <= last seen ${lastSeenNonce}`,
+        remainingCapacity: 0n,
+        isAlreadyPledged: true,
+        status: snapshot.status,
+        verification: snapshot.verification,
+      };
+    }
+
+    // 5. Invariant capacity calculation
+    const isSettled = snapshot.status === ClaimStatus.Settled;
+    const maxAllowed = (snapshot.faceValue * BigInt(snapshot.maxAdvanceRateBps)) / 10000n;
+    const remainingCapacity =
+      (!isSettled && maxAllowed > snapshot.totalPledged) ? maxAllowed - snapshot.totalPledged : 0n;
+    const isAlreadyPledged = isSettled || remainingCapacity === 0n || snapshot.totalPledged >= maxAllowed;
+
+    return {
+      valid: true,
+      remainingCapacity,
+      isAlreadyPledged,
+      status: snapshot.status,
+      verification: snapshot.verification,
+    };
+  }
+
   private logViolation(
     claimId: ClaimId,
     ruleName: string,
@@ -324,3 +512,4 @@ export class ClaimGuard {
     });
   }
 }
+

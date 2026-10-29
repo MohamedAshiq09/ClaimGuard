@@ -104,9 +104,26 @@ export interface LienStatus {
   requireVerified: boolean;
 }
 
+export interface SignedSnapshot {
+  snapshot: ClaimSnapshot;
+  signature: string;
+  signer: string;
+  snapshotHash: string;
+}
+
+export interface SnapshotVerificationResult {
+  valid: boolean;
+  reason?: string;
+  remainingCapacity: bigint;
+  isAlreadyPledged: boolean;
+  status: ClaimStatus;
+  verification: VerificationStatus;
+}
+
 export interface ClaimGuardConfig {
   rpcUrl: string;
   contractAddress: string;
   signerUri?: string; // SURI or seed phrase (e.g. "//Alice" or seed)
   metadataJson?: any;
 }
+

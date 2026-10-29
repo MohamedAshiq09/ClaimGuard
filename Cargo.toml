@@ -3,3 +3,11 @@ resolver = "2"
 members = [
     "contracts/claimguard_core",
 ]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+

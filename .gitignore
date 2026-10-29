@@ -10,6 +10,7 @@ Cargo.lock
 **/*.rs.bk
 
 # Node / JS
+node_modules
 node_modules/
 dist/
 build/

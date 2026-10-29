@@ -66,6 +66,48 @@ pub struct VerificationStatusUpdated {
 }
 
 #[ink::event]
+pub struct ClaimAsserted {
+    #[ink(topic)]
+    pub assertion_id: u32,
+    #[ink(topic)]
+    pub claim_id: ClaimId,
+    #[ink(topic)]
+    pub asserter: AccountId,
+    pub bond: Balance,
+    pub challenge_deadline: u64,
+}
+
+#[ink::event]
+pub struct ClaimChallenged {
+    #[ink(topic)]
+    pub assertion_id: u32,
+    #[ink(topic)]
+    pub claim_id: ClaimId,
+    #[ink(topic)]
+    pub challenger: AccountId,
+    pub bond: Balance,
+}
+
+#[ink::event]
+pub struct AssertionResolved {
+    #[ink(topic)]
+    pub assertion_id: u32,
+    #[ink(topic)]
+    pub claim_id: ClaimId,
+    pub valid: bool,
+    #[ink(topic)]
+    pub resolver: AccountId,
+}
+
+#[ink::event]
+pub struct AssertionFinalized {
+    #[ink(topic)]
+    pub assertion_id: u32,
+    #[ink(topic)]
+    pub claim_id: ClaimId,
+}
+
+#[ink::event]
 pub struct InvariantViolationAttempt {
     #[ink(topic)]
     pub claim_id: ClaimId,
@@ -74,3 +116,4 @@ pub struct InvariantViolationAttempt {
     pub actor: AccountId,
     pub attempted_amount: Balance,
 }
+

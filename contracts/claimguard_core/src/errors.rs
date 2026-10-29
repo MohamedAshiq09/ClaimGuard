@@ -16,4 +16,11 @@ pub enum Error {
     LienAlreadyInactive,
     ArithmeticOverflow,
     ZeroAmount,
+    AssertionNotFound,
+    AssertionAlreadyChallenged,
+    AssertionAlreadyResolved,
+    ChallengePeriodExpired,
+    ChallengePeriodNotExpired,
+    InsufficientBond,
 }
+

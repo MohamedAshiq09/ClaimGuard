@@ -1,6 +1,7 @@
 use ink::primitives::AccountId;
 
 pub type ClaimId = u64;
+pub type AssertionId = u32;
 pub type Hash256 = [u8; 32];
 pub type Balance = u128;
 pub type Timestamp = u64;
@@ -42,6 +43,7 @@ pub struct Claim {
     pub allowed_jurisdiction: [u8; 2],
     pub registered_at: Timestamp,
     pub total_pledged: Balance,
+    pub require_verified: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, scale::Encode, scale::Decode)]
@@ -56,6 +58,22 @@ pub struct Lien {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, scale::Encode, scale::Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout))]
+pub struct Assertion {
+    pub assertion_id: AssertionId,
+    pub claim_id: ClaimId,
+    pub asserter: AccountId,
+    pub bond: Balance,
+    pub asserted_at: Timestamp,
+    pub challenge_deadline: Timestamp,
+    pub challenged: bool,
+    pub challenger: Option<AccountId>,
+    pub challenger_bond: Balance,
+    pub resolved: bool,
+    pub passed: bool,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, scale::Encode, scale::Decode)]
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
 pub struct ClaimSnapshot {
     pub claim_id: ClaimId,
@@ -64,7 +82,9 @@ pub struct ClaimSnapshot {
     pub face_value: Balance,
     pub total_pledged: Balance,
     pub max_advance_rate_bps: u16,
+    pub require_verified: bool,
     pub nonce: u64,
     pub timestamp: Timestamp,
     pub expiry: Timestamp,
 }
+

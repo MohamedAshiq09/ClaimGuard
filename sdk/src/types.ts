@@ -1,4 +1,5 @@
 export type ClaimId = number | bigint;
+export type AssertionId = number;
 export type Hash256 = string; // Hex string '0x...'
 export type Balance = bigint;
 export type Timestamp = bigint;
@@ -34,6 +35,7 @@ export interface Claim {
   allowedJurisdiction: string;
   registeredAt: bigint;
   totalPledged: bigint;
+  requireVerified: boolean;
 }
 
 export interface Lien {
@@ -45,11 +47,47 @@ export interface Lien {
   active: boolean;
 }
 
+export interface Assertion {
+  assertionId: AssertionId;
+  claimId: ClaimId;
+  asserter: string;
+  bond: bigint;
+  assertedAt: bigint;
+  challengeDeadline: bigint;
+  challenged: boolean;
+  challenger?: string;
+  challengerBond: bigint;
+  resolved: boolean;
+  passed: boolean;
+}
+
+export interface ClaimSnapshot {
+  claimId: ClaimId;
+  status: ClaimStatus;
+  verification: VerificationStatus;
+  faceValue: bigint;
+  totalPledged: bigint;
+  maxAdvanceRateBps: number;
+  requireVerified: boolean;
+  nonce: bigint;
+  timestamp: bigint;
+  expiry: bigint;
+}
+
 export interface InvariantCheckResult {
   allowed: boolean;
   remainingCapacity: bigint;
   violatedRule?: string;
   reason?: string;
+}
+
+export interface ViolationLogEntry {
+  timestamp: number;
+  claimId: ClaimId;
+  ruleName: string;
+  actor: string;
+  attemptedAmount: bigint;
+  reason: string;
 }
 
 export interface LienStatus {
@@ -63,10 +101,12 @@ export interface LienStatus {
   activeLienCount: number;
   status: ClaimStatus;
   verification: VerificationStatus;
+  requireVerified: boolean;
 }
 
 export interface ClaimGuardConfig {
   rpcUrl: string;
   contractAddress: string;
-  privateKey?: string;
+  signerUri?: string; // SURI or seed phrase (e.g. "//Alice" or seed)
+  metadataJson?: any;
 }

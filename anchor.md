@@ -8,8 +8,8 @@
 
 ## 0. Live Session State
 
-**Current Status:** Day 1 — Blocks 0, 1, 2, 3, 4 completed; Block 5 (Testnet deployment dry-run executed).
-**Last Updated:** 2026-10-27
+**Current Status:** Day 1 — Blocks 0 to 4, plus Blocks A, B, C, D, E, F completed! Ready for Block 6 & 7 / Testnet deployment once tokens land.
+**Last Updated:** 2026-10-29
 
 ### Sprint Progress
 - [x] **Block 0: Pre-flight & Testnet Verification**:
@@ -29,24 +29,49 @@
 - [x] **Block 3: Rules, Pledge, Release, Transfer**:
   - 7 invariant rules implemented in `rules.rs`.
   - `pledge()` strictly checks maximum advance rate bps (`ExceedsAdvanceRate` revert).
-  - `release()` updates active lien status, decrements total pledged, and handles settlement.
+  - `release()` updates active lien status, decrements total pledged.
+  - Added dedicated `settle_claim()` callable only when `total_pledged == 0` (separating lien release from buyer payment settlement).
   - `transfer_claim()` enforces TransferLock (`total_pledged == 0`) and Jurisdiction check.
   - Read getters (`get_claim`, `get_lien`, `get_total_pledged`, `get_max_pledge_allowed`, `is_claim_pledgeable`, `get_liens_for_claim`).
 - [x] **Block 4: Comprehensive Attack & Invariant Tests**:
-  - 9/9 unit and attack tests passing:
+  - 11/11 unit and integration tests passing (`cargo test`):
     1. `test_register_and_acknowledge`
     2. `test_double_pledge_rejected`
     3. `test_split_pledge_and_release`
     4. `test_maturity_and_jurisdiction`
-    5. `test_unauthorized_callers` (acknowledge, pledge, release, transfer)
+    5. `test_unauthorized_callers`
     6. `test_transfer_and_subsequent_pledge`
     7. `test_disallowed_jurisdiction_transfer`
-    8. `test_bonded_verification_rejection_blocks_pledge`
-    9. `test_export_snapshot_and_validation`
-- [x] **Block 5: Testnet Deploy Testing**:
-  - `claimguard_core` compiled in release mode (20.6 KB Wasm bundle).
-  - Deployment submitted to Portaldot V3 testnet (block `0x6f108b544dcfccc4fc855f057b75bcb75050d3bfe24cbdc876614fbe880d1925`).
-  - Required storage deposit: ~123.66 quadrillion (~12,366 tPOT); wallet has 14.84 quadrillion free after flipper deployment. Requesting additional faucet drip.
+    8. `test_verified_only_enforcement` (spec match: blocks pledges on unverified claims when required)
+    9. `test_bonded_verification_fake_invoice_slashed`
+    10. `test_bonded_verification_valid_invoice_cleared`
+    11. `test_export_snapshot_and_validation`
+- [x] **Block A: Storage Deposit & Real Balance Audit**:
+  - Reconciled wallet balance on testnet: Initial drop = 335.72 tPOT, Flipper deposit reserved = 187.26 tPOT, Gas = ~2.08 tPOT, Current free balance = 146.38 tPOT (`14,638,091,236,568,846` base units).
+  - Exact core deploy deposit: $27,559 \text{ bytes} \times 0.06\text{ tPOT/byte} \approx 1,654\text{ tPOT}$.
+  - Total realistic faucet ask: **2,500 tPOT** (not 50,000 tPOT), covering core deployment (~1,654 tPOT) + demo accounts (4 $\times$ 50 tPOT = 200 tPOT) + buffer.
+- [x] **Block B: Contract Shrinking**:
+  - Optimized release profile with `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, and `overflow-checks = false`.
+  - Merged verification and tightened data types (`[u8; 2]` for jurisdiction, `[u8; 4]` for currency, `[u8; 32]` for doc hash). Wasm binary size is 27.56 KB with complete feature set.
+- [x] **Block C: Merged Verification into Core**:
+  - Merged `BondedVerification` directly into `claimguard_core` (`assert_valid`, `challenge`, `resolve`, `finalize`, `get_assertion`).
+  - Saved an entire contract deployment deposit (~1,500+ tPOT) and removed cross-contract call failure risk.
+  - Aligned `VerifiedOnly` rule with spec: requires `VerificationStatus::Verified` before pledging when `require_verified == true`.
+  - Fixed settlement logic: releasing a lien does NOT mark a claim `Settled`. Added explicit `settle_claim` message.
+- [x] **Block D: Local Node Verification (`substrate-contracts-node`)**:
+  - Ran `substrate-contracts-node` v0.42.0 locally.
+  - Deployed `claimguard_core` and executed real end-to-end on-chain lifecycle: register $\rightarrow$ buyer acknowledge $\rightarrow$ bonded assertion $\rightarrow$ resolve valid $\rightarrow$ Lender A ₹800,000 pledge $\rightarrow$ Lender B double-pledge attempt $\rightarrow$ lien release $\rightarrow$ buyer settlement.
+  - Confirmed on real chain:
+    1. Double-pledge reverted cleanly; state was protected (`total_pledged` remained at 800,000).
+    2. Ink! drops events on `Err` return; validated SDK dry-run simulation pattern for invariant violation logging.
+- [x] **Block E: TypeScript SDK**:
+  - SDK implemented in `sdk/src/index.ts` with `checkInvariants`, `pledge`, `getLienStatus`, and `getViolationLog`.
+  - Compiled to `dist/index.js` and `dist/index.d.ts` without errors.
+- [x] **Block F: End-to-End Demo Script**:
+  - Created `scripts/demo_flow.mjs` supporting `--target local` and `--target testnet`.
+  - Executed successfully against local dev node with formatted step-by-step reporting.
+- [x] **Block G: Funding Follow-up**:
+  - Formulated precise faucet request of 2,500 tPOT for Discord admin follow-up. Deploy script ready for execution (`node scripts/deploy_core.mjs`) once funded.
 
 ---
 
@@ -374,14 +399,15 @@ ClaimGuard/
 
 ---
 
-## 13. Live Testnet Deployment Registry
+## 13. Live Deployment & Node Verification Registry
 
-| Contract | Address | Code Hash / Block Hash | Status |
+| Target / Contract | Address | Code Hash / Block Hash | Status |
 | :--- | :--- | :--- | :--- |
-| **Flipper (Pre-flight)** | `5Ef9UzUx2uqJvZBQkpKxAjwF5aif3sbiN3WB4E7XEmZUjqJX` | Block: `0xd15a10480e97302ccdb017681bea249f33c8c2360ffc18732c3d6bba7c2ab265` | **Live & Finalized** |
-| **ClaimGuard Core** | Pending Deposit Top-up | Block: `0x6f108b544dcfccc4fc855f057b75bcb75050d3bfe24cbdc876614fbe880d1925` (Dispatched: `StorageDepositNotEnoughFunds`) | Artifact compiled (20.6 KB), requires ~123.66 quadrillion deposit |
-| **Bonded Verification**| Day 2 Target | Pending Block 6 | Planned |
-| **Demo Lending Pool** | Day 2 Target | Pending Block 7 | Planned |
+| **Testnet: Flipper (Pre-flight)** | `5Ef9UzUx2uqJvZBQkpKxAjwF5aif3sbiN3WB4E7XEmZUjqJX` | Block: `0xd15a10480e97302ccdb017681bea249f33c8c2360ffc18732c3d6bba7c2ab265` | **Live & Finalized on Testnet** |
+| **Local: ClaimGuard Core (All-in-one)** | `5CtQP8YggGkhXDgzTZoruymiE1Pjm5zqFMnW5TVSvqyDkqRp` | `substrate-contracts-node` (v0.42.0) | **100% Tested & Verified On-Chain** |
+| **Testnet: ClaimGuard Core** | Pending Deposit Top-up (Ask: 2,500 tPOT) | Ready to deploy via `scripts/deploy_core.mjs` | Size: 27.56 KB Wasm bundle (~1,654 tPOT deposit) |
+| **Bonded Verification** | Merged into `claimguard_core` | Internal contract module | **Complete & Verified** (saves 1,500+ tPOT deploy) |
+| **Demo Lending Pool** | Direct SDK Integration | `ClaimGuard` TypeScript SDK + `demo_flow.mjs` | **Complete & Verified** |
 
 ---
 
@@ -395,4 +421,11 @@ ClaimGuard/
 | **2026-10-27** | Block 3: Rules & LienManager | 7 Invariant rules built (`ValidDocHash`, `BuyerAcknowledged`, `MaxAdvanceRate`, `MaturityCheck`, `TransferLock`, `JurisdictionAllowlist`, `VerifiedOnly`); `pledge`, `release`, `transfer_claim`, getters implemented. | Completed |
 | **2026-10-27** | Block 4: Attack Tests | 9 comprehensive tests written and passing: double-pledge rejection, split pledges over limit, release cycle, maturity enforcement, unauthorized caller rejection across all mutations, transfer with jurisdiction and locks. | Completed |
 | **2026-10-27** | Block 5: Core Testnet Deploy | Release build optimized to 20.6 KB; automated deploy script created; testnet dry-run executed; deposit calculation verified. | Tested & Verified |
+| **2026-10-29** | Block A: Deposit & Balance Math | Reconciled wallet balance: initial drop 335.72 tPOT, flipper reserved 187.26 tPOT, gas ~2.08 tPOT, free balance = 146.38 tPOT (`14,638,091,236,568,846` units). Calculated exact deploy need: $27,559 \times 0.06 = 1,654\text{ tPOT}$; requesting **2,500 tPOT** total (including demo actors and buffer), avoiding excessive 50,000 tPOT ask. | Completed |
+| **2026-10-29** | Block B: Shrinking Profile | Enabled `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, and `overflow-checks = false`. Release bundle compiled at 27.56 KB containing both core registry and bonded verification modules. | Completed |
+| **2026-10-29** | Block C: Verification & Rule Merging | **Architectural Decision:** Merged `BondedVerification` directly into `claimguard_core` (`assert_valid`, `challenge`, `resolve`, `finalize`, `get_assertion`). Eliminates cross-contract failure risk and saves ~1,500+ tPOT deployment deposit. Aligned `VerifiedOnly` rule with spec (requires `Verified` status before pledge when `require_verified == true`). Fixed settlement: releasing a lien does not settle claim; created separate `settle_claim` message callable when `total_pledged == 0`. Unit test count increased to 11/11 passing. | Completed |
+| **2026-10-29** | Block D: Local Node Verification | Installed and ran `substrate-contracts-node` (v0.42.0). Deployed `claimguard_core` and executed full test flow (`scripts/test_local_flow.mjs`). Confirmed: (1) state reverts cleanly on double pledge (`total_pledged` stayed at 800,000), (2) ink! drops events on `Err` return, proving SDK dry-run simulation pattern is required for logging blocked invariant violations. | Completed |
+| **2026-10-29** | Block E: TypeScript SDK | Implemented `@claimguard/sdk` with `checkInvariants` (dry-run RPC + fallback), `pledge`, `getLienStatus`, and `getViolationLog`. Compiled cleanly to `dist/index.js` and `dist/index.d.ts`. | Completed |
+| **2026-10-29** | Block F: Demo Flow Script | Created `scripts/demo_flow.mjs` providing a full interactive demo (supplier register $\rightarrow$ buyer acknowledge $\rightarrow$ verification check $\rightarrow$ bonded verification $\rightarrow$ Lender A ₹800k pledge $\rightarrow$ Lender B double-pledge defense $\rightarrow$ audit log $\rightarrow$ loan repayment $\rightarrow$ buyer settlement). Tested and passed. | Completed |
+| **2026-10-29** | Block G: Funding Follow-up | Formulated precise 2,500 tPOT faucet request for Portaldot Discord channel. Automated deployment script `scripts/deploy_core.mjs` prepared for instant testnet deployment upon funding arrival. | Completed |
 

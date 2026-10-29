@@ -72,6 +72,16 @@
   - Executed successfully against local dev node with formatted step-by-step reporting.
 - [x] **Block G: Funding Follow-up**:
   - Formulated precise faucet request of 2,500 tPOT for Discord admin follow-up. Deploy script ready for execution (`node scripts/deploy_core.mjs`) once funded.
+- [x] **Block 11: Signed Snapshot & Lender B Cross-Chain Gateway**:
+  - Implemented `exportSnapshot`, `signSnapshot`, and `verifySnapshot` with cryptographic signature verification in `@claimguard/sdk`.
+  - Created `scripts/relayer.mjs` to extract and sign canonical state snapshots from the core contract.
+  - Created `scripts/lender_b_verifier.mjs` demonstrating: (1) cross-chain double-pledge interception when invoice is pledged on origin, (2) tamper attack interception (hash mismatch), and (3) replay attack interception (nonce checking).
+- [x] **Block 12: Interactive Dashboard (Frontend)**:
+  - Scaffolding and production build of `frontend/` using Vite + React + TypeScript with custom glassmorphism dark-mode design system (`index.css`).
+  - Implemented 5 primary tabs: Receivables Registry, Double-Pledge Defense Simulator, Bonded Verification, Cross-Chain Gateway, and Real-Time Invariant Audit Feed.
+  - Verified in browser with subagent taking visual snapshot proofs.
+- [x] **Block 13: README & Trust Model Documentation**:
+  - Comprehensive rewrite of `README.md` including Meena's problem story, 4-layer trust stack, architecture diagram, 11/11 unit & attack test results, 5-line SDK guide, reproducible demo commands, and honest trust model disclosures.
 
 ---
 
@@ -428,4 +438,7 @@ ClaimGuard/
 | **2026-10-29** | Block E: TypeScript SDK | Implemented `@claimguard/sdk` with `checkInvariants` (dry-run RPC + fallback), `pledge`, `getLienStatus`, and `getViolationLog`. Compiled cleanly to `dist/index.js` and `dist/index.d.ts`. | Completed |
 | **2026-10-29** | Block F: Demo Flow Script | Created `scripts/demo_flow.mjs` providing a full interactive demo (supplier register $\rightarrow$ buyer acknowledge $\rightarrow$ verification check $\rightarrow$ bonded verification $\rightarrow$ Lender A ₹800k pledge $\rightarrow$ Lender B double-pledge defense $\rightarrow$ audit log $\rightarrow$ loan repayment $\rightarrow$ buyer settlement). Tested and passed. | Completed |
 | **2026-10-29** | Block G: Funding Follow-up | Formulated precise 2,500 tPOT faucet request for Portaldot Discord channel. Automated deployment script `scripts/deploy_core.mjs` prepared for instant testnet deployment upon funding arrival. | Completed |
+| **2026-10-29** | Block 11: Signed Snapshot & Lender B | Built `scripts/relayer.mjs` and `scripts/lender_b_verifier.mjs`. Verified cross-chain double-pledge defense (intercepted with remaining capacity = 0), tamper defense (hash mismatch), and replay defense (nonce tracking). | Completed |
+| **2026-10-29** | Block 12: Dashboard Frontend | Built responsive glassmorphic Web3 dashboard (`frontend/`) in React + TypeScript + Vite. Tested in browser with verified rendering across all 5 workspace tabs and attack simulator. | Completed |
+| **2026-10-29** | Block 13: README & Trust Model | Updated `README.md` with full architecture, 11/11 passing tests, end-to-end execution guide, and honest trust model disclosures. | Completed |
 

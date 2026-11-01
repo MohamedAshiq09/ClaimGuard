@@ -1,0 +1,36 @@
+{
+  "network": {
+    "name": "Portaldot V3 Testnet",
+    "wsRpc": "wss://test-node-v3.portaldot.dev",
+    "httpRpc": "https://test-node-v3.portaldot.dev",
+    "evmRpc": "https://test-evm-rpc-v3.portaldot.dev",
+    "chainId": 420420777
+  },
+  "deployer": {
+    "address": "5CXXcLDkPrtviD8yadPi2ewQYUyKQfjFbnwjZJUqijudz8JB"
+  },
+  "contracts": {
+    "flipper": {
+      "address": "5E2f7k54FqJdfg73Y2cwt4G795b5w47iQ5fM2bB9qj7z1bM5",
+      "instantiateTx": "0x53c9e6daab66b6c07be3ddad00ffcf9872e411b0e37ab7515e0649733ee8e137",
+      "deployedAt": "2026-10-31"
+    },
+    "claimguard_core": {
+      "address": "",
+      "instantiateTx": "",
+      "wasmHash": "",
+      "status": "pending_testnet_funding",
+      "localDevAddress": "5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy"
+    }
+  },
+  "transactions": {
+    "register": "",
+    "acknowledge": "",
+    "assert": "",
+    "finalize": "",
+    "pledge_a": "",
+    "rejected_pledge_b": "",
+    "challenge": "",
+    "resolve": ""
+  }
+}

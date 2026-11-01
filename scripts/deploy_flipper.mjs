@@ -5,11 +5,20 @@ import { cryptoWaitReady } from '../sdk/node_modules/@polkadot/util-crypto/bundl
 import fs from 'fs';
 
 async function main() {
+  try {
+    process.loadEnvFile();
+  } catch {}
+
+  const seed = process.env.PORTALDOT_DEPLOYER_SEED;
+  if (!seed) {
+    console.error('ERROR: PORTALDOT_DEPLOYER_SEED environment variable is required.');
+    process.exit(1);
+  }
+
   await cryptoWaitReady();
-  const wsProvider = new WsProvider('wss://test-node-v3.portaldot.dev');
+  const wsProvider = new WsProvider(process.env.PORTALDOT_SUBSTRATE_WS_RPC || 'wss://test-node-v3.portaldot.dev');
   const api = await ApiPromise.create({ provider: wsProvider });
 
-  const seed = 'acid flash embody april cotton beauty love ramp excuse void potato teach';
   const keyring = new Keyring({ type: 'sr25519', ss58Format: 42 });
   const deployer = keyring.addFromUri(seed);
 

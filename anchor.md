@@ -113,31 +113,25 @@ ClaimGuard turns receivables into on-chain claims with attached **invariants** (
                                                     │ register_claim()
                                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ ClaimGuard Protocol (Portaldot V3)                                                              │
+│ claimguard_core (Unified ink! 5.1.1 Smart Contract on Portaldot V3)                             │
 │                                                                                                 │
-│  ┌───────────────────────┐          ┌───────────────────────┐         ┌──────────────────────┐  │
-│  │     ClaimRegistry     │◄────────►│     ClaimToken        │────────►│  InvariantEngine     │  │
-│  │   (Storage & State)   │          │      (PSP34)          │         │  (Pluggable Rules)   │  │
-│  └───────────┬───────────┘          └───────────────────────┘         └──────────┬───────────┘  │
-│              │                                                                   │              │
-│              │                                                                   ▼              │
-│              │                      ┌───────────────────────┐         ┌──────────────────────┐  │
-│              └─────────────────────►│      LienManager      │◄────────┤  7 Rule Modules      │  │
-│                                     │  (Single Lien Truth)  │         │  (Jurisdiction, etc) │  │
-│                                     └───────────┬───────────┘         └──────────────────────┘  │
-│                                                 │                                               │
-│                                                 ▼                                               │
-│                                     ┌───────────────────────┐                                   │
-│                                     │   CrossChainGateway   │                                   │
-│                                     │  (Signed Snapshots)   │                                   │
-│                                     └───────────┬───────────┘                                   │
-└─────────────────────────────────────────────────┼───────────────────────────────────────────────┘
-                                                  │
-                                                  ▼
-                                      ┌───────────────────────┐
-                                      │ Destination Verifier  │
-                                      │    (Other Chains)     │
-                                      └───────────────────────┘
+│  ┌─────────────────────────┐     ┌─────────────────────────┐     ┌───────────────────────────┐  │
+│  │   Receivables Registry  │────►│     Invariant Engine    │────►│        LienManager        │  │
+│  │  (Claim State & Storage)│     │  (7 Invariant Rules)    │     │   (Single Lien Truth)     │  │
+│  └────────────┬────────────┘     └─────────────────────────┘     └─────────────┬─────────────┘  │
+│               │                                                                │                │
+│               ▼                                                                ▼                │
+│  ┌─────────────────────────┐                                     ┌───────────────────────────┐  │
+│  │   Bonded Verification   │                                     │     Snapshot Exporter     │  │
+│  │      (Truth Layer)      │                                     │  (Cryptographic State)    │  │
+│  └─────────────────────────┘                                     └─────────────┬─────────────┘  │
+└────────────────────────────────────────────────────────────────────────────────┼────────────────┘
+                                                                                 │ signed snapshot (sr25519)
+                                                                                 ▼
+                                                                   ┌───────────────────────────┐
+                                                                   │ Second Environment        │
+                                                                   │ (Simulated Verifier)      │
+                                                                   └───────────────────────────┘
 ```
 
 ---
@@ -310,16 +304,19 @@ console.log(`Current advance rate: ${status.currentAdvanceRatePct}%`);
 
 ## 8. Cross-Chain Approach & Trust Model
 
-### 8.1 Signed Snapshot Protocol
-1. Core contract exports a cryptographic state snapshot: `{ claim_id, status, verification, total_pledged, lenders_root, nonce, expiry }`.
-2. Relayer service signs the snapshot with an authorized ECDSA/Ed25519 signer key.
-3. Destination verifier contract checks `nonce` (replay protection), `expiry` (freshness), and signature.
-4. Destination DeFi protocols read from the verifier as local truth.
+### 8.1 Signed Snapshot Protocol (Simulated Second Environment)
+> **Honest Disclosure:** Signed snapshot verified by a second environment (simulated). Relayer is a trusted signer.
+
+1. Core contract exports a cryptographic state snapshot: `{ claim_id, status, verification, face_value, total_pledged, max_advance_rate_bps, require_verified, nonce, timestamp, expiry }`.
+2. Relayer service signs the canonical snapshot hash using an authorized **`sr25519`** cryptographic key pair.
+3. Destination verifier (`scripts/lender_b_verifier.mjs` / Lender B Verifier) checks `nonce` (replay protection), `expiry` (freshness), and signature integrity via `@polkadot/util-crypto` `signatureVerify`.
+4. Secondary lenders and DeFi protocols verify the signed snapshot to intercept double-pledging across disconnected chains without needing complex multi-sig bridges.
 
 ### 8.2 Honest Trust Model Disclosures
 - **Resolver:** Single admin account in MVP. Roadmap: 2-of-3 multisig, decentralized dispute resolver / UMA oracle.
 - **Relayer:** Trusted signer in MVP. Roadmap: BEEFY light-client / threshold signature bridge.
 - **Vigilance:** Optimistic challenges require challengers or watcher bots. Mitigated by buyer financial incentive and bond scaling.
+- **Cross-Chain:** Signed snapshot verified by a second environment (simulated). Calling it a bridge overclaims.
 
 ---
 
@@ -327,56 +324,53 @@ console.log(`Current advance rate: ${status.currentAdvanceRatePct}%`);
 
 | Criterion | DoraHacks Weight | How ClaimGuard Wins |
 | :--- | :--- | :--- |
-| **Technical Feasibility** | **30%** | Modular ink! WASM/revive smart contracts, passing unit and attack tests, real testnet tx hashes for all operations, reproducible SDK and demo scripts. |
+| **Technical Feasibility** | **30%** | Unified ink! 5.1.1 WASM smart contract (`claimguard_core`), 20/20 passing unit and attack tests, real testnet tx hashes, reproducible SDK and demo scripts. |
 | **Innovation** | **30%** | Solves the unaddressed RWA double-pledging problem with unified state and bonded attestation rather than simple token bridging. |
 | **Ecosystem Contribution** | **20%** | 5-line TypeScript SDK allowing any Portaldot DeFi lending pool to safely accept real-world receivables. |
 | **Business Potential** | **20%** | Targets the multi-trillion-dollar MSME trade finance gap with clear monetization (basis-point protocol fees on liens and settle). |
 
 ---
 
-## 10. Repository Layout (Section 10 Specification)
+## 10. Repository Layout
 
 ```text
 ClaimGuard/
-├── README.md                          # Universal Project Overview & Quickstart
+├── README.md                          # Universal Project Overview, Trust Model & Quickstart
 ├── anchor.md                          # Single source of truth (this document)
-├── .env.example                       # Environment variables template
-├── .env                               # Local secrets (ignored by git)
-├── Cargo.toml                         # Workspace Cargo configuration
+├── LICENSE                            # Apache-2.0 Open Source License
+├── .env.example                       # Clean environment variables template with empty values
+├── .env                               # Local secrets (ignored by git, never committed)
+├── Cargo.toml                         # Workspace Cargo configuration (overflow-checks = true)
+├── deployments.json                   # Tracked contract addresses & on-chain tx hashes
 ├── contracts/
-│   ├── claimguard_core/               # Core Registry, LienManager, InvariantEngine
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs                 # Contract entrypoint & messages
-│   │       ├── types.rs               # Data structures, enums, structs
-│   │       ├── errors.rs              # Error taxonomy
-│   │       ├── events.rs              # Event definitions
-│   │       └── rules.rs               # Invariant validation functions
-│   ├── bonded_verification/           # Bonded assertion & challenge contract (Day 2)
-│   │   ├── Cargo.toml
-│   │   └── src/lib.rs
-│   └── demo_lending_pool/             # Consumer lender pool demonstrating SDK (Day 2)
+│   └── claimguard_core/               # Merged Core: Registry, LienManager, BondedVerification
 │       ├── Cargo.toml
-│       └── src/lib.rs
+│       └── src/
+│           ├── lib.rs                 # Contract entrypoint, 20/20 unit & attack tests
+│           ├── types.rs               # Data structures, enums, structs
+│           ├── errors.rs              # Error taxonomy (including security variants)
+│           ├── events.rs              # Event definitions (including LenderApproved, InvariantViolationAttempt)
+│           └── rules.rs               # 7 Invariant validation functions
+├── data/
+│   └── violations.json                # Persistent violation audit log (file-backed)
 ├── sdk/                               # TypeScript SDK for lenders & builders
 │   ├── package.json
 │   ├── tsconfig.json
 │   └── src/
-│       ├── index.ts                   # Main ClaimGuard SDK entrypoint
-│       ├── types.ts                   # TypeScript interfaces
-│       └── client.ts                  # RPC & contract interaction methods
+│       ├── index.ts                   # Main ClaimGuard SDK (with persistent audit & tx error capture)
+│       └── types.ts                   # TypeScript interfaces
 ├── scripts/
-│   ├── deploy.ts                      # Deployment script for Portaldot V3
-│   ├── demo_flow.ts                   # End-to-end reproducible CLI demo
-│   ├── relayer.ts                     # Cross-chain snapshot signer & relayer
-│   └── watcher.ts                     # Optimistic assertion watcher bot
-├── frontend/                          # React + Tailwind Dashboard (Day 3)
+│   ├── deploy_core.mjs                # Portaldot V3 core contract deployment
+│   ├── deploy_flipper.mjs             # Portaldot V3 toolchain verification deployment
+│   ├── demo_flow.mjs                  # Interactive 2-minute CLI demo
+│   ├── test_local_flow.mjs            # End-to-end substrate-contracts-node integration runner
+│   ├── relayer.mjs                    # Cryptographic snapshot signer (sr25519)
+│   └── lender_b_verifier.mjs          # Simulated second environment snapshot verifier
+├── frontend/                          # React + TypeScript + Vite Dashboard (Theme: "Ledger")
 │   ├── package.json
-│   ├── src/
-│   └── public/
-└── docs/
-    ├── complete_idea.md               # Full Combined Project Document
-    └── Bonded RWA Invariants PRD...md # PRD reference
+│   ├── index.html
+│   └── src/
+└── docs/                              # Project reference documentation
 ```
 
 ---
@@ -414,10 +408,10 @@ ClaimGuard/
 | Target / Contract | Address | Code Hash / Block Hash | Status |
 | :--- | :--- | :--- | :--- |
 | **Testnet: Flipper (Pre-flight)** | `5Ef9UzUx2uqJvZBQkpKxAjwF5aif3sbiN3WB4E7XEmZUjqJX` | Block: `0xd15a10480e97302ccdb017681bea249f33c8c2360ffc18732c3d6bba7c2ab265` | **Live & Finalized on Testnet** |
-| **Local: ClaimGuard Core (All-in-one)** | `5CtQP8YggGkhXDgzTZoruymiE1Pjm5zqFMnW5TVSvqyDkqRp` | `substrate-contracts-node` (v0.42.0) | **100% Tested & Verified On-Chain** |
-| **Testnet: ClaimGuard Core** | Pending Deposit Top-up (Ask: 2,500 tPOT) | Ready to deploy via `scripts/deploy_core.mjs` | Size: 27.56 KB Wasm bundle (~1,654 tPOT deposit) |
+| **Local: ClaimGuard Core (All-in-one)** | `5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy` | `substrate-contracts-node` (v0.42.0) | **100% Tested & Verified On-Chain** |
+| **Testnet: ClaimGuard Core** | Pending Deposit Top-up (Ask: 2,500 tPOT at `5CXXcLDkPrtviD8yadPi2ewQYUyKQfjFbnwjZJUqijudz8JB`) | Ready to deploy via `scripts/deploy_core.mjs` | Size: 31.2 KB Wasm bundle (`overflow-checks = true`) |
 | **Bonded Verification** | Merged into `claimguard_core` | Internal contract module | **Complete & Verified** (saves 1,500+ tPOT deploy) |
-| **Demo Lending Pool** | Direct SDK Integration | `ClaimGuard` TypeScript SDK + `demo_flow.mjs` | **Complete & Verified** |
+| **Lender B Verifier** | Simulated second environment (`scripts/lender_b_verifier.mjs`) | Verified via `sr25519` cryptographic signatures | **Complete & Verified** |
 
 ---
 
@@ -431,14 +425,16 @@ ClaimGuard/
 | **2026-10-27** | Block 3: Rules & LienManager | 7 Invariant rules built (`ValidDocHash`, `BuyerAcknowledged`, `MaxAdvanceRate`, `MaturityCheck`, `TransferLock`, `JurisdictionAllowlist`, `VerifiedOnly`); `pledge`, `release`, `transfer_claim`, getters implemented. | Completed |
 | **2026-10-27** | Block 4: Attack Tests | 9 comprehensive tests written and passing: double-pledge rejection, split pledges over limit, release cycle, maturity enforcement, unauthorized caller rejection across all mutations, transfer with jurisdiction and locks. | Completed |
 | **2026-10-27** | Block 5: Core Testnet Deploy | Release build optimized to 20.6 KB; automated deploy script created; testnet dry-run executed; deposit calculation verified. | Tested & Verified |
-| **2026-10-29** | Block A: Deposit & Balance Math | Reconciled wallet balance: initial drop 335.72 tPOT, flipper reserved 187.26 tPOT, gas ~2.08 tPOT, free balance = 146.38 tPOT (`14,638,091,236,568,846` units). Calculated exact deploy need: $27,559 \times 0.06 = 1,654\text{ tPOT}$; requesting **2,500 tPOT** total (including demo actors and buffer), avoiding excessive 50,000 tPOT ask. | Completed |
-| **2026-10-29** | Block B: Shrinking Profile | Enabled `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, and `overflow-checks = false`. Release bundle compiled at 27.56 KB containing both core registry and bonded verification modules. | Completed |
-| **2026-10-29** | Block C: Verification & Rule Merging | **Architectural Decision:** Merged `BondedVerification` directly into `claimguard_core` (`assert_valid`, `challenge`, `resolve`, `finalize`, `get_assertion`). Eliminates cross-contract failure risk and saves ~1,500+ tPOT deployment deposit. Aligned `VerifiedOnly` rule with spec (requires `Verified` status before pledge when `require_verified == true`). Fixed settlement: releasing a lien does not settle claim; created separate `settle_claim` message callable when `total_pledged == 0`. Unit test count increased to 11/11 passing. | Completed |
-| **2026-10-29** | Block D: Local Node Verification | Installed and ran `substrate-contracts-node` (v0.42.0). Deployed `claimguard_core` and executed full test flow (`scripts/test_local_flow.mjs`). Confirmed: (1) state reverts cleanly on double pledge (`total_pledged` stayed at 800,000), (2) ink! drops events on `Err` return, proving SDK dry-run simulation pattern is required for logging blocked invariant violations. | Completed |
-| **2026-10-29** | Block E: TypeScript SDK | Implemented `@claimguard/sdk` with `checkInvariants` (dry-run RPC + fallback), `pledge`, `getLienStatus`, and `getViolationLog`. Compiled cleanly to `dist/index.js` and `dist/index.d.ts`. | Completed |
-| **2026-10-29** | Block F: Demo Flow Script | Created `scripts/demo_flow.mjs` providing a full interactive demo (supplier register $\rightarrow$ buyer acknowledge $\rightarrow$ verification check $\rightarrow$ bonded verification $\rightarrow$ Lender A ₹800k pledge $\rightarrow$ Lender B double-pledge defense $\rightarrow$ audit log $\rightarrow$ loan repayment $\rightarrow$ buyer settlement). Tested and passed. | Completed |
-| **2026-10-29** | Block G: Funding Follow-up | Formulated precise 2,500 tPOT faucet request for Portaldot Discord channel. Automated deployment script `scripts/deploy_core.mjs` prepared for instant testnet deployment upon funding arrival. | Completed |
-| **2026-10-29** | Block 11: Signed Snapshot & Lender B | Built `scripts/relayer.mjs` and `scripts/lender_b_verifier.mjs`. Verified cross-chain double-pledge defense (intercepted with remaining capacity = 0), tamper defense (hash mismatch), and replay defense (nonce tracking). | Completed |
-| **2026-10-29** | Block 12: Dashboard Frontend | Built responsive glassmorphic Web3 dashboard (`frontend/`) in React + TypeScript + Vite. Tested in browser with verified rendering across all 5 workspace tabs and attack simulator. | Completed |
-| **2026-10-29** | Block 13: README & Trust Model | Updated `README.md` with full architecture, 11/11 passing tests, end-to-end execution guide, and honest trust model disclosures. | Completed |
+| **2026-10-29** | Block A: Deposit & Balance Math | Reconciled wallet balance: initial drop 335.72 tPOT, flipper reserved 187.26 tPOT, gas ~2.08 tPOT, free balance = 146.38 tPOT. Exact deploy need: $27,559 \times 0.06 = 1,654\text{ tPOT}$; requesting **2,500 tPOT** total. | Completed |
+| **2026-10-29** | Block B: Shrinking Profile | Enabled `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`. Wasm binary size optimized. | Completed |
+| **2026-10-29** | Block C: Verification & Rule Merging | Merged `BondedVerification` directly into `claimguard_core` (`assert_valid`, `challenge`, `resolve`, `finalize`, `get_assertion`). Aligned `VerifiedOnly` rule with spec. Added dedicated `settle_claim`. | Completed |
+| **2026-10-29** | Block D: Local Node Verification | Ran `substrate-contracts-node` (v0.42.0). Deployed `claimguard_core` and confirmed double pledge reverts cleanly while state remains clean. | Completed |
+| **2026-10-29** | Block E: TypeScript SDK | Implemented `@claimguard/sdk` with `checkInvariants`, `pledge`, `getLienStatus`, and `getViolationLog`. | Completed |
+| **2026-10-29** | Block F: Demo Flow Script | Created `scripts/demo_flow.mjs` providing a full interactive demo across the entire lifecycle. | Completed |
+| **2026-10-29** | Block 11: Signed Snapshot & Lender B | Built `scripts/relayer.mjs` and `scripts/lender_b_verifier.mjs`. Verified double-pledge defense, tamper defense, and replay defense. | Completed |
+| **2026-11-01** | Day 1: Block 1 — Funding Plan | Recorded 2,500 tPOT request at `5CXXcLDkPrtviD8yadPi2ewQYUyKQfjFbnwjZJUqijudz8JB`, fallback date Nov 3 IST. | Completed |
+| **2026-11-01** | Day 1: Block 2 — Security Fixes | **Correction 2:** Fixed pledge authorization hole: added `approve_lender(claim_id, lender, max_amount)` and `get_lender_approval`. Lenders cannot pledge without issuer consent (anti-griefing). **Correction 3:** Set `overflow-checks = true` in Cargo.toml profile. Audited all balance math with `checked_*` returning `ArithmeticOverflow`. **Correction 9:** Bond accounting edge cases handled (cannot challenge self, challenge after window rejected, finalize twice rejected, resolve unchallenged rejected, duplicate assertion rejected, zero bond rejected, 90/10 split verified). **Correction 10:** Enforced millisecond consistency across block timestamps and challenge/snapshot windows. **20 of 20 unit and attack tests passing!** Release Wasm size 31.2 KB. | Completed |
+| **2026-11-01** | Day 1: Block 3 — Secrets & Hygiene | **Correction 6:** Removed all hardcoded seeds from deploy scripts, scanned git log, verified `.env` ignored, cleaned `.env.example`. **Correction 15:** Added Apache-2.0 `LICENSE`, created `deployments.json` schema. | Completed |
+| **2026-11-01** | Day 1: Block 4 — Persistent Violation Log | **Correction 5:** Persisted violation audit log to `data/violations.json` and browser `localStorage`. Updated `pledge` to support `options.skipDryRun` for capturing real failed extrinsics and tx hashes. | Completed |
+| **2026-11-01** | Day 1: Block 5 — Anchor & README Sync | **Corrections 7 & 8:** Synced architecture diagram to single merged core, updated repo layout, documented sr25519 snapshot and simulated second environment honest trust disclosures. | Completed |
 

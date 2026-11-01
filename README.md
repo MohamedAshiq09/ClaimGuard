@@ -65,30 +65,30 @@ ClaimGuard solves this by answering the four critical questions every lender ask
         │ 1. register_claim(face_value, due_date, doc_hash, advance_rate)
         ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│ ClaimGuard Protocol (Portaldot Network V3 / substrate-contracts-node)           │
+│ claimguard_core (Unified ink! 5.1.1 Smart Contract on Portaldot V3)             │
 │                                                                                 │
 │   ┌─────────────────────┐                          ┌────────────────────────┐   │
-│   │    ClaimRegistry    │                          │     InvariantEngine    │   │
-│   │  (Storage & State)  │                          │  (7 Rule Verification) │   │
+│   │ Receivables Registry│                          │    Invariant Engine    │   │
+│   │ (State & Storage)   │                          │ (7 Invariant Rules)    │   │
 │   └──────────┬──────────┘                          └───────────┬────────────┘   │
 │              │                                                 │                │
 │              ▼                                                 ▼                │
 │   ┌─────────────────────────────────────────────────────────────────────────┐   │
 │   │                              LienManager                                │   │
-│   │                (Single Shared Source of Truth on Liens)                 │   │
+│   │                 (Single Source of Truth on Active Liens)                │   │
 │   └──────────┬──────────────────────────────────────────────────────────────┘   │
 │              │                                                 ▲                │
 │              │                                                 │                │
 │              ▼                                                 │                │
 │   ┌─────────────────────┐                          ┌───────────┴────────────┐   │
-│   │ BondedVerification  │                          │    ClaimGuard SDK      │   │
-│   │ (Truth & Staking)   │                          │  (Lenders / Borrowers) │   │
+│   │ Bonded Verification │                          │    ClaimGuard SDK      │   │
+│   │    (Truth Layer)    │                          │ (Lenders & Integrators)│   │
 │   └──────────┬──────────┘                          └────────────────────────┘   │
 │              │                                                 │                │
 │              ▼                                                 ▼                │
 │   ┌─────────────────────┐                          ┌────────────────────────┐   │
-│   │  CrossChainGateway  │─────────────────────────►│   Lender B Verifier    │   │
-│   │  (Signed Snapshots) │                          │(External Chains / DeFi)│   │
+│   │  Snapshot Exporter  │─── sr25519 Signed Snapshot ──►  Second Environment    │   │
+│   │ (Cryptographic State│                          │  (Simulated Verifier)  │   │
 │   └─────────────────────┘                          └────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -102,10 +102,19 @@ Every interaction (registration, acknowledgment, transfer, and pledge) is checke
 1. **`ValidDocHash` (Anti-Duplicate Guard):** Rejects any claim whose document hash already exists in storage. The exact same invoice document cannot be registered under a new ID.
 2. **`BuyerAcknowledged`:** A claim cannot be pledged until the buyer explicitly calls `acknowledge()` on-chain, legally validating the obligation.
 3. **`MaxAdvanceRate` (Double-Pledge Prevention):** Total active liens cannot exceed `face_value * max_advance_rate_bps / 10,000` (e.g., 80%). Any pledge exceeding this reverts immediately with `Error::ExceedsAdvanceRate`.
-4. **`MaturityCheck`:** Prevents new pledges if the invoice has passed its maturity `due_date`.
+4. **`MaturityCheck`:** Prevents new pledges if current block timestamp >= `due_date`.
 5. **`TransferLock`:** Freezes claim ownership transfers while active liens exist (`total_pledged > 0`).
 6. **`JurisdictionAllowlist`:** Restricts claim transfers to verified wallets matching the permitted jurisdiction ISO country code (e.g., `IN` for India).
 7. **`VerifiedOnly` (Truth Layer Coupling):** Claims with unverified or `Rejected` verification status are strictly blocked from receiving financing when `require_verified == true`.
+
+---
+
+## 🔒 Security Hardening & Invariant Defenses
+
+1. **Pledge Authorization & Anti-Griefing:** A lender cannot pledge against an invoice without explicit consent. The invoice issuer must either initiate the pledge directly or call `approve_lender(claim_id, lender, max_amount)`. Pledges without prior authorization revert with `LenderNotApproved`.
+2. **Checked Arithmetic & Overflow Protection:** Profile release uses `overflow-checks = true`. All balance arithmetic (`+`, `-`, `*`) is executed using `checked_add`, `checked_sub`, and `checked_mul` returning `Error::ArithmeticOverflow`.
+3. **Bond Accounting Edge Case Defenses:** Asserters cannot challenge their own assertions (`CannotChallengeSelf`). Challenges after the window are blocked (`ChallengePeriodExpired`). Premature resolution without challenges is blocked (`AssertionNotChallenged`). Double finalization is blocked (`AssertionAlreadyResolved`). Slashed bonds are split strictly 90% to the winner and 10% protocol fee.
+4. **Time Unit Consistency:** Block timestamps are tracked in milliseconds, and challenge windows and expiry are converted to milliseconds consistently across smart contract, SDK, and frontend.
 
 ---
 
@@ -146,10 +155,12 @@ console.log(`Lien #${lienId} recorded! Tx: ${txHash}`);
 
 ## 🌐 Cross-Chain Signed Snapshot Protocol (Lender B Defense)
 
-How does a lender on a secondary chain or EVM pool know Meena's invoice wasn't already pledged on Portaldot?
+> **Honest Disclosure:** Signed snapshot verified by a second environment (simulated). Relayer is a trusted signer. Calling it a bridge overclaims.
+
+How does a lender on a secondary environment know Meena's invoice wasn't already pledged on Portaldot?
 
 1. **Authoritative Export:** The core contract exports a cryptographic state snapshot with `{ claim_id, status, verification, total_pledged, nonce, expiry }`.
-2. **Relayer Signature:** The Relayer service signs the canonical snapshot hash using an authorized keypair (`scripts/relayer.mjs`).
+2. **Relayer Signature:** The Relayer service signs the canonical snapshot hash using an authorized **`sr25519`** keypair (`scripts/relayer.mjs`).
 3. **Lender B Verification:** The destination protocol (`scripts/lender_b_verifier.mjs`) independently verifies:
    - Cryptographic signature validity
    - Freshness (`now <= expiry`)
@@ -162,27 +173,36 @@ How does a lender on a secondary chain or EVM pool know Meena's invoice wasn't a
 
 ## 🧪 Smart Contract Verification & Testing
 
-The core contract (`contracts/claimguard_core`) is written in **ink! v5.1.1** with release profile optimizations (`opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`).
+The core contract (`contracts/claimguard_core`) is written in **ink! v5.1.1** with release profile optimizations (`opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `overflow-checks = true`).
 
-### 11 / 11 Passing Unit & Attack Tests
+### 20 / 20 Passing Unit & Attack Tests
 ```bash
 cargo test --manifest-path contracts/claimguard_core/Cargo.toml
 ```
 ```text
-running 11 tests
-test claimguard_core::tests::test_register_and_acknowledge ... ok
-test claimguard_core::tests::test_double_pledge_rejected ... ok
-test claimguard_core::tests::test_split_pledge_and_release ... ok
-test claimguard_core::tests::test_maturity_and_jurisdiction ... ok
-test claimguard_core::tests::test_unauthorized_callers ... ok
-test claimguard_core::tests::test_transfer_and_subsequent_pledge ... ok
-test claimguard_core::tests::test_disallowed_jurisdiction_transfer ... ok
-test claimguard_core::tests::test_verified_only_enforcement ... ok
-test claimguard_core::tests::test_bonded_verification_fake_invoice_slashed ... ok
-test claimguard_core::tests::test_bonded_verification_valid_invoice_cleared ... ok
+running 20 tests
+test claimguard_core::tests::test_arithmetic_overflow_protection ... ok
+test claimguard_core::tests::test_bond_accounting_cannot_challenge_self ... ok
+test claimguard_core::tests::test_bond_accounting_challenge_after_window_rejected ... ok
+test claimguard_core::tests::test_bond_accounting_resolve_unchallenged_rejected ... ok
+test claimguard_core::tests::test_bond_accounting_assert_twice_rejected ... ok
+test claimguard_core::tests::test_bond_accounting_finalize_twice_rejected ... ok
 test claimguard_core::tests::test_export_snapshot_and_validation ... ok
+test claimguard_core::tests::test_disallowed_jurisdiction_transfer ... ok
+test claimguard_core::tests::test_bond_accounting_zero_bond_rejected ... ok
+test claimguard_core::tests::test_double_pledge_rejected ... ok
+test claimguard_core::tests::test_maturity_and_jurisdiction ... ok
+test claimguard_core::tests::test_bonded_verification_fake_invoice_slashed ... ok
+test claimguard_core::tests::test_transfer_and_subsequent_pledge ... ok
+test claimguard_core::tests::test_bonded_verification_valid_invoice_cleared ... ok
+test claimguard_core::tests::test_resolve_bond_split_calculation ... ok
+test claimguard_core::tests::test_lender_pledge_without_approval_rejected ... ok
+test claimguard_core::tests::test_register_and_acknowledge ... ok
+test claimguard_core::tests::test_split_pledge_and_release ... ok
+test claimguard_core::tests::test_unauthorized_callers ... ok
+test claimguard_core::tests::test_verified_only_enforcement ... ok
 
-test result: ok. 11 passed; 0 failed; 0 ignored; finished in 0.01s
+test result: ok. 20 passed; 0 failed; 0 ignored; finished in 0.01s
 ```
 
 ---
@@ -221,16 +241,17 @@ npm run dev
 | Environment / Target | Address / Hash | Status |
 | :--- | :--- | :--- |
 | **Testnet: Flipper (Pre-flight)** | `5Ef9UzUx2uqJvZBQkpKxAjwF5aif3sbiN3WB4E7XEmZUjqJX` | Block: `0xd15a10480e97302ccdb017681bea249f33c8c2360ffc18732c3d6bba7c2ab265` |
-| **Local: ClaimGuard Core (All-in-One)** | `5CtQP8YggGkhXDgzTZoruymiE1Pjm5zqFMnW5TVSvqyDkqRp` | `substrate-contracts-node` (v0.42.0) — Verified |
-| **Testnet: ClaimGuard Core** | Pending Top-up (`scripts/deploy_core.mjs`) | Size: 27.56 KB Wasm bundle (~1,654 tPOT deposit) |
+| **Local: ClaimGuard Core (All-in-One)** | `5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy` | `substrate-contracts-node` (v0.42.0) — Verified |
+| **Testnet: ClaimGuard Core** | Pending Top-up (`5CXXcLDkPrtviD8yadPi2ewQYUyKQfjFbnwjZJUqijudz8JB`) | Size: 31.2 KB Wasm bundle (`overflow-checks = true`) |
 
 ---
 
 ## ⚖️ Honest Trust Model & Limitations
 
 1. **Dispute Resolver:** In the MVP, dispute resolution is handled by an authorized resolver key. Roadmap: Transition to a 2-of-3 multi-sig committee, followed by UMA / Kleros optimistic oracles.
-2. **Relayer Service:** In the MVP, snapshot relaying uses a trusted Relayer signature key. Roadmap: Trustless BEEFY light-client proofs on destination chains.
-3. **Challenger Incentives:** Optimistic challenges require off-chain watcher bots or buyer vigilance, financially backed by 90% bond bounties upon successful fraud disputes.
+2. **Relayer Service:** In the MVP, snapshot relaying uses a trusted Relayer signature key (`sr25519`). Roadmap: Trustless BEEFY light-client proofs on destination chains.
+3. **Cross-Chain:** Signed snapshot verified by a second environment (simulated).
+4. **Challenger Incentives:** Optimistic challenges require off-chain watcher bots or buyer vigilance, financially backed by 90% bond bounties upon successful fraud disputes.
 
 ---
 

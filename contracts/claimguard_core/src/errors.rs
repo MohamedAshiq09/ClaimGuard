@@ -22,5 +22,9 @@ pub enum Error {
     ChallengePeriodExpired,
     ChallengePeriodNotExpired,
     InsufficientBond,
+    LenderNotApproved,
+    CannotChallengeSelf,
+    AssertionAlreadyActive,
+    AssertionNotChallenged,
 }
 

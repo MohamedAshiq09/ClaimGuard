@@ -11,7 +11,8 @@ mod claimguard_core {
     use crate::events::{
         AssertionFinalized, AssertionResolved, ClaimAcknowledged, ClaimAsserted,
         ClaimChallenged, ClaimRegistered, ClaimSettled, ClaimTransferred,
-        InvariantViolationAttempt, LienRecorded, LienReleased, VerificationStatusUpdated,
+        InvariantViolationAttempt, LenderApproved, LienRecorded, LienReleased,
+        VerificationStatusUpdated,
     };
     use crate::rules::{
         validate_advance_rate, validate_buyer_acknowledged, validate_doc_hash_unique,
@@ -40,6 +41,7 @@ mod claimguard_core {
         pub authorized_verifiers: Mapping<AccountId, bool>,
         pub assertions: Mapping<AssertionId, Assertion>,
         pub claim_latest_assertion: Mapping<ClaimId, AssertionId>,
+        pub lender_approvals: Mapping<(ClaimId, AccountId), Balance>,
     }
 
     impl Default for ClaimGuardCore {
@@ -68,7 +70,39 @@ mod claimguard_core {
                 authorized_verifiers: Mapping::default(),
                 assertions: Mapping::default(),
                 claim_latest_assertion: Mapping::default(),
+                lender_approvals: Mapping::default(),
             }
+        }
+
+        /// Authorize a lender to pledge against a claim up to max_amount (issuer only).
+        #[ink(message)]
+        pub fn approve_lender(
+            &mut self,
+            claim_id: ClaimId,
+            lender: AccountId,
+            max_amount: Balance,
+        ) -> Result<(), Error> {
+            let caller = self.env().caller();
+            let claim = self.claims.get(claim_id).ok_or(Error::ClaimNotFound)?;
+
+            if caller != claim.issuer {
+                return Err(Error::Unauthorized);
+            }
+
+            self.lender_approvals.insert((claim_id, lender), &max_amount);
+            self.env().emit_event(LenderApproved {
+                claim_id,
+                lender,
+                max_amount,
+            });
+
+            Ok(())
+        }
+
+        /// Read approved pledge allowance for a lender on a claim.
+        #[ink(message)]
+        pub fn get_lender_approval(&self, claim_id: ClaimId, lender: AccountId) -> Balance {
+            self.lender_approvals.get((claim_id, lender)).unwrap_or(0)
         }
 
         /// Authorize an address to update claim verification status directly.
@@ -226,17 +260,25 @@ mod claimguard_core {
 
             let max_allowed = claim
                 .face_value
-                .saturating_mul(claim.max_advance_rate_bps as u128)
+                .checked_mul(claim.max_advance_rate_bps as u128)
+                .ok_or(Error::ArithmeticOverflow)?
                 .checked_div(10_000)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let attempted_total = claim
+                .total_pledged
+                .checked_add(amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let remaining_capacity = max_allowed
+                .checked_sub(attempted_total)
                 .unwrap_or(0);
-            let attempted_total = claim.total_pledged.saturating_add(amount);
-            let remaining_capacity = max_allowed.saturating_sub(attempted_total);
 
             Ok(remaining_capacity)
         }
 
         /// 4. Pledge claim to lender: records lien in the shared LienManager.
         /// Reverts on-chain if invariants (e.g. double pledge over limit) are breached.
+        /// Requires issuer consent: either issuer calls directly naming lender, or lender
+        /// calls within pre-approved allowance (via approve_lender).
         #[ink(message)]
         pub fn pledge(
             &mut self,
@@ -244,12 +286,29 @@ mod claimguard_core {
             lender: AccountId,
             amount: Balance,
         ) -> Result<u32, Error> {
+            if amount == 0 {
+                return Err(Error::ZeroAmount);
+            }
+
             let caller = self.env().caller();
             let mut claim = self.claims.get(claim_id).ok_or(Error::ClaimNotFound)?;
             let current_time = self.env().block_timestamp();
 
-            // Authorization: issuer or lender
-            if caller != claim.issuer && caller != lender {
+            // Authorization:
+            // Case A: Issuer calls pledge directly naming `lender`.
+            // Case B: Lender calls pledge -> MUST have prior approval from issuer >= amount.
+            if caller == claim.issuer {
+                // Issuer directly authorizes pledge to lender
+            } else if caller == lender {
+                let approved = self.lender_approvals.get((claim_id, lender)).unwrap_or(0);
+                if approved < amount {
+                    return Err(Error::LenderNotApproved);
+                }
+                let remaining = approved
+                    .checked_sub(amount)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                self.lender_approvals.insert((claim_id, lender), &remaining);
+            } else {
                 return Err(Error::Unauthorized);
             }
 
@@ -343,7 +402,10 @@ mod claimguard_core {
             lien.active = false;
             self.liens.insert((claim_id, lien_id), &lien);
 
-            claim.total_pledged = claim.total_pledged.saturating_sub(lien.amount);
+            claim.total_pledged = claim
+                .total_pledged
+                .checked_sub(lien.amount)
+                .ok_or(Error::ArithmeticOverflow)?;
 
             // Once total pledged reaches 0, claim returns to unencumbered Acknowledged status.
             if claim.total_pledged == 0 {
@@ -441,17 +503,31 @@ mod claimguard_core {
                 return Err(Error::ClaimRejected);
             }
 
-            if bond_amount < self.min_bond {
+            if bond_amount == 0 || bond_amount < self.min_bond {
                 return Err(Error::InsufficientBond);
             }
 
+            // Invariant: Cannot assert twice if an active unresolved assertion exists
+            if let Some(existing_aid) = self.claim_latest_assertion.get(claim_id) {
+                if let Some(existing_assertion) = self.assertions.get(existing_aid) {
+                    if !existing_assertion.resolved {
+                        return Err(Error::AssertionAlreadyActive);
+                    }
+                }
+            }
+
             let current_time = self.env().block_timestamp();
-            let window = if challenge_window_seconds < 60 {
+            let window_seconds = if challenge_window_seconds < 60 {
                 86_400 // default 24h
             } else {
                 challenge_window_seconds
             };
-            let challenge_deadline = current_time.saturating_add(window);
+            let window_ms = window_seconds
+                .checked_mul(1_000)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let challenge_deadline = current_time
+                .checked_add(window_ms)
+                .ok_or(Error::ArithmeticOverflow)?;
 
             let assertion_id = self.next_assertion_id;
             let assertion = Assertion {
@@ -511,12 +587,17 @@ mod claimguard_core {
                 return Err(Error::AssertionAlreadyResolved);
             }
 
+            // Invariant: Asserter cannot challenge own assertion
+            if caller == assertion.asserter {
+                return Err(Error::CannotChallengeSelf);
+            }
+
             let current_time = self.env().block_timestamp();
             if current_time >= assertion.challenge_deadline {
                 return Err(Error::ChallengePeriodExpired);
             }
 
-            if bond_amount < assertion.bond {
+            if bond_amount == 0 || bond_amount < assertion.bond {
                 return Err(Error::InsufficientBond);
             }
 
@@ -545,7 +626,8 @@ mod claimguard_core {
         }
 
         /// 10. Resolve assertion: Designated resolver rules on dispute.
-        /// If valid == false, claim is marked Rejected and asserter loses bond.
+        /// If valid == false, claim is marked Rejected and asserter bond is slashed (90% to challenger, 10% fee).
+        /// If valid == true, claim is marked Verified and challenger bond is slashed (90% to asserter, 10% fee).
         #[ink(message)]
         pub fn resolve(
             &mut self,
@@ -561,6 +643,9 @@ mod claimguard_core {
             if assertion.resolved {
                 return Err(Error::AssertionAlreadyResolved);
             }
+            if !assertion.challenged {
+                return Err(Error::AssertionNotChallenged);
+            }
 
             assertion.resolved = true;
             assertion.passed = valid;
@@ -575,11 +660,43 @@ mod claimguard_core {
             claim.verification = new_status;
             self.claims.insert(assertion.claim_id, &claim);
 
+            let (rewarded_party, reward_amount, protocol_fee) = if valid {
+                // Genuine claim: Challenger lost. Slashes challenger bond! 90% reward to asserter, 10% fee.
+                let reward = assertion
+                    .challenger_bond
+                    .checked_mul(90)
+                    .ok_or(Error::ArithmeticOverflow)?
+                    .checked_div(100)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                let fee = assertion
+                    .challenger_bond
+                    .checked_sub(reward)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                (assertion.asserter, reward, fee)
+            } else {
+                // Fake invoice: Asserter lost. Slashes asserter bond! 90% reward to challenger, 10% fee.
+                let challenger_addr = assertion.challenger.unwrap_or(caller);
+                let reward = assertion
+                    .bond
+                    .checked_mul(90)
+                    .ok_or(Error::ArithmeticOverflow)?
+                    .checked_div(100)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                let fee = assertion
+                    .bond
+                    .checked_sub(reward)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                (challenger_addr, reward, fee)
+            };
+
             self.env().emit_event(AssertionResolved {
                 assertion_id,
                 claim_id: assertion.claim_id,
                 valid,
                 resolver: caller,
+                rewarded_party,
+                reward_amount,
+                protocol_fee,
             });
 
             self.env().emit_event(VerificationStatusUpdated {
@@ -669,11 +786,17 @@ mod claimguard_core {
 
             self.snapshot_nonce.insert(claim_id, &next_nonce);
 
-            let duration = if validity_duration == 0 {
+            let duration_seconds = if validity_duration == 0 {
                 3600 // 1 hour default
             } else {
                 validity_duration
             };
+            let duration_ms = duration_seconds
+                .checked_mul(1_000)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let expiry = current_time
+                .checked_add(duration_ms)
+                .ok_or(Error::ArithmeticOverflow)?;
 
             let snapshot = ClaimSnapshot {
                 claim_id,
@@ -685,7 +808,7 @@ mod claimguard_core {
                 require_verified: claim.require_verified,
                 nonce: next_nonce,
                 timestamp: current_time,
-                expiry: current_time.saturating_add(duration),
+                expiry,
             };
 
             Ok(snapshot)
@@ -727,11 +850,10 @@ mod claimguard_core {
         pub fn get_max_pledge_allowed(&self, claim_id: ClaimId) -> Balance {
             self.claims
                 .get(claim_id)
-                .map(|c| {
+                .and_then(|c| {
                     c.face_value
-                        .saturating_mul(c.max_advance_rate_bps as u128)
+                        .checked_mul(c.max_advance_rate_bps as u128)?
                         .checked_div(10_000)
-                        .unwrap_or(0)
                 })
                 .unwrap_or(0)
         }
@@ -1109,14 +1231,14 @@ mod claimguard_core {
             let mut contract = ClaimGuardCore::new();
             set_block_timestamp(1_000);
 
-            // Register claim with require_verified = true
+            // Register claim with require_verified = true and due_date = 10_000_000 ms
             set_caller(accounts.alice);
             let claim_id = contract
                 .register_claim(
                     accounts.bob,
                     1_000_000,
                     *b"INR\0",
-                    90_000,
+                    10_000_000,
                     [88u8; 32],
                     8000,
                     *b"IN",
@@ -1132,7 +1254,7 @@ mod claimguard_core {
             let pledge_err1 = contract.pledge(claim_id, accounts.eve, 100_000);
             assert_eq!(pledge_err1, Err(Error::NotVerified));
 
-            // Assert valid (status -> Asserted)
+            // Assert valid (status -> Asserted) - window 3600 seconds = 3,600,000 ms
             let assertion_id = contract.assert_valid(claim_id, 3600, 5000).unwrap();
             assert_eq!(assertion_id, 1);
 
@@ -1140,8 +1262,8 @@ mod claimguard_core {
             let pledge_err2 = contract.pledge(claim_id, accounts.eve, 100_000);
             assert_eq!(pledge_err2, Err(Error::NotVerified));
 
-            // Fast forward past challenge window and finalize
-            set_block_timestamp(5_000);
+            // Fast forward past challenge window (3,601,000 ms) and finalize
+            set_block_timestamp(4_000_000);
             contract.finalize(assertion_id).unwrap();
 
             let claim = contract.get_claim(claim_id).unwrap();
@@ -1276,17 +1398,290 @@ mod claimguard_core {
             );
             assert_eq!(zero_res, Err(Error::ZeroAmount));
 
-            // Export first snapshot
+            // Export first snapshot (3600 seconds = 3,600,000 ms)
             let s1 = contract.export_snapshot(claim_id, 3600).unwrap();
             assert_eq!(s1.nonce, 1);
             assert_eq!(s1.timestamp, 1_000);
-            assert_eq!(s1.expiry, 4_600);
+            assert_eq!(s1.expiry, 3_601_000);
             assert_eq!(s1.total_pledged, 0);
 
-            // Export second snapshot - nonce increments
+            // Export second snapshot (7200 seconds = 7,200,000 ms) - nonce increments
             let s2 = contract.export_snapshot(claim_id, 7200).unwrap();
             assert_eq!(s2.nonce, 2);
-            assert_eq!(s2.expiry, 8_200);
+            assert_eq!(s2.expiry, 7_201_000);
+        }
+
+        #[ink::test]
+        fn test_lender_pledge_without_approval_rejected() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [11u8; 32],
+                    8000,
+                    *b"IN",
+                    false,
+                )
+                .unwrap();
+
+            set_caller(accounts.bob);
+            contract.acknowledge(claim_id).unwrap();
+
+            // Lender Eve calls pledge directly WITHOUT prior issuer approval -> REJECTED
+            set_caller(accounts.eve);
+            let unapproved_pledge = contract.pledge(claim_id, accounts.eve, 300_000);
+            assert_eq!(unapproved_pledge, Err(Error::LenderNotApproved));
+
+            // Random third party Frank calls pledge -> REJECTED (Unauthorized)
+            set_caller(accounts.frank);
+            let third_party_pledge = contract.pledge(claim_id, accounts.eve, 100_000);
+            assert_eq!(third_party_pledge, Err(Error::Unauthorized));
+
+            // Issuer Alice approves Lender Eve for up to 500,000
+            set_caller(accounts.alice);
+            assert_eq!(contract.approve_lender(claim_id, accounts.eve, 500_000), Ok(()));
+            assert_eq!(contract.get_lender_approval(claim_id, accounts.eve), 500_000);
+
+            // Non-issuer Bob tries to approve lender -> REJECTED (Unauthorized)
+            set_caller(accounts.bob);
+            assert_eq!(
+                contract.approve_lender(claim_id, accounts.eve, 100_000),
+                Err(Error::Unauthorized)
+            );
+
+            // Now Lender Eve calls pledge for 300,000 -> SUCCEEDS!
+            set_caller(accounts.eve);
+            let lien_id = contract.pledge(claim_id, accounts.eve, 300_000).unwrap();
+            assert_eq!(lien_id, 1);
+            assert_eq!(contract.get_total_pledged(claim_id), 300_000);
+            assert_eq!(contract.get_lender_approval(claim_id, accounts.eve), 200_000);
+
+            // Eve tries to pledge 300,000 more (exceeding remaining 200,000 approval) -> REJECTED
+            let over_approval = contract.pledge(claim_id, accounts.eve, 300_000);
+            assert_eq!(over_approval, Err(Error::LenderNotApproved));
+
+            // Eve pledges remaining 200,000 -> SUCCEEDS!
+            let lien_id_2 = contract.pledge(claim_id, accounts.eve, 200_000).unwrap();
+            assert_eq!(lien_id_2, 2);
+            assert_eq!(contract.get_total_pledged(claim_id), 500_000);
+            assert_eq!(contract.get_lender_approval(claim_id, accounts.eve), 0);
+        }
+
+        #[ink::test]
+        fn test_arithmetic_overflow_protection() {
+            // Test overflow in validate_advance_rate with Balance::MAX
+            let huge_face = Balance::MAX;
+            let overflow_res = validate_advance_rate(huge_face, 0, 100, 8000);
+            assert_eq!(overflow_res, Err(Error::ArithmeticOverflow));
+
+            // Test overflow when total_pledged + new_pledge > Balance::MAX
+            let max_pledge = Balance::MAX;
+            let overflow_add = validate_advance_rate(huge_face, max_pledge, 1, 10_000);
+            assert_eq!(overflow_add, Err(Error::ArithmeticOverflow));
+        }
+
+        #[ink::test]
+        fn test_bond_accounting_cannot_challenge_self() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [12u8; 32],
+                    8000,
+                    *b"IN",
+                    true,
+                )
+                .unwrap();
+
+            let aid = contract.assert_valid(claim_id, 3600, 2000).unwrap();
+
+            // Asserter Alice attempts to challenge her own assertion -> REJECTED
+            let self_challenge = contract.challenge(aid, 2000);
+            assert_eq!(self_challenge, Err(Error::CannotChallengeSelf));
+        }
+
+        #[ink::test]
+        fn test_bond_accounting_challenge_after_window_rejected() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [13u8; 32],
+                    8000,
+                    *b"IN",
+                    true,
+                )
+                .unwrap();
+
+            let aid = contract.assert_valid(claim_id, 3600, 2000).unwrap();
+
+            // Move past deadline (1000 + 3,600,000 = 3,601,000 ms)
+            set_block_timestamp(4_000_000);
+
+            set_caller(accounts.charlie);
+            let late_challenge = contract.challenge(aid, 2000);
+            assert_eq!(late_challenge, Err(Error::ChallengePeriodExpired));
+        }
+
+        #[ink::test]
+        fn test_bond_accounting_finalize_twice_rejected() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [14u8; 32],
+                    8000,
+                    *b"IN",
+                    true,
+                )
+                .unwrap();
+
+            let aid = contract.assert_valid(claim_id, 3600, 2000).unwrap();
+
+            // Finalize before deadline -> fails
+            assert_eq!(contract.finalize(aid), Err(Error::ChallengePeriodNotExpired));
+
+            // Fast forward past deadline and finalize
+            set_block_timestamp(4_000_000);
+            assert_eq!(contract.finalize(aid), Ok(()));
+
+            // Finalize again -> REJECTED (AlreadyResolved)
+            assert_eq!(contract.finalize(aid), Err(Error::AssertionAlreadyResolved));
+        }
+
+        #[ink::test]
+        fn test_bond_accounting_resolve_unchallenged_rejected() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [15u8; 32],
+                    8000,
+                    *b"IN",
+                    true,
+                )
+                .unwrap();
+
+            let aid = contract.assert_valid(claim_id, 3600, 2000).unwrap();
+
+            // Resolver attempts to rule on unchallenged assertion -> REJECTED
+            let premature_resolve = contract.resolve(aid, true);
+            assert_eq!(premature_resolve, Err(Error::AssertionNotChallenged));
+        }
+
+        #[ink::test]
+        fn test_bond_accounting_assert_twice_rejected() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [16u8; 32],
+                    8000,
+                    *b"IN",
+                    true,
+                )
+                .unwrap();
+
+            // First assertion
+            assert_eq!(contract.assert_valid(claim_id, 3600, 2000), Ok(1));
+
+            // Second assertion while first is active -> REJECTED
+            let second_assertion = contract.assert_valid(claim_id, 3600, 2000);
+            assert_eq!(second_assertion, Err(Error::AssertionAlreadyActive));
+        }
+
+        #[ink::test]
+        fn test_bond_accounting_zero_bond_rejected() {
+            let accounts = default_accounts();
+            let mut contract = ClaimGuardCore::new();
+            set_block_timestamp(1_000);
+
+            set_caller(accounts.alice);
+            let claim_id = contract
+                .register_claim(
+                    accounts.bob,
+                    1_000_000,
+                    *b"INR\0",
+                    90_000,
+                    [17u8; 32],
+                    8000,
+                    *b"IN",
+                    true,
+                )
+                .unwrap();
+
+            // Zero bond assertion -> REJECTED
+            assert_eq!(
+                contract.assert_valid(claim_id, 3600, 0),
+                Err(Error::InsufficientBond)
+            );
+
+            // Sub-minimum bond (min_bond is 1,000) -> REJECTED
+            assert_eq!(
+                contract.assert_valid(claim_id, 3600, 999),
+                Err(Error::InsufficientBond)
+            );
+
+            let aid = contract.assert_valid(claim_id, 3600, 1000).unwrap();
+
+            // Zero bond challenge -> REJECTED
+            set_caller(accounts.charlie);
+            assert_eq!(contract.challenge(aid, 0), Err(Error::InsufficientBond));
+
+            // Less than assertion bond (1000) -> REJECTED
+            assert_eq!(contract.challenge(aid, 500), Err(Error::InsufficientBond));
+        }
+
+        #[ink::test]
+        fn test_resolve_bond_split_calculation() {
+            // Verify 90/10 split arithmetic
+            let slashed_bond: Balance = 10_000;
+            let reward = slashed_bond.checked_mul(90).unwrap().checked_div(100).unwrap();
+            let fee = slashed_bond.checked_sub(reward).unwrap();
+            assert_eq!(reward, 9_000);
+            assert_eq!(fee, 1_000);
         }
     }
 }

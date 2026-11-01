@@ -89,6 +89,15 @@ pub struct ClaimChallenged {
 }
 
 #[ink::event]
+pub struct LenderApproved {
+    #[ink(topic)]
+    pub claim_id: ClaimId,
+    #[ink(topic)]
+    pub lender: AccountId,
+    pub max_amount: Balance,
+}
+
+#[ink::event]
 pub struct AssertionResolved {
     #[ink(topic)]
     pub assertion_id: u32,
@@ -97,6 +106,9 @@ pub struct AssertionResolved {
     pub valid: bool,
     #[ink(topic)]
     pub resolver: AccountId,
+    pub rewarded_party: AccountId,
+    pub reward_amount: Balance,
+    pub protocol_fee: Balance,
 }
 
 #[ink::event]

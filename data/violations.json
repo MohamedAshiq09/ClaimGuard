@@ -1,0 +1,12 @@
+[
+  {
+    "timestamp": 1730472000000,
+    "claimId": 1,
+    "ruleName": "ExceedsAdvanceRate",
+    "actor": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+    "attemptedAmount": "800000",
+    "reason": "Blocked: ExceedsAdvanceRate. Only 0 of 800,000 capacity remains.",
+    "txHash": null,
+    "blockHash": null
+  }
+]

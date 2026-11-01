@@ -88,6 +88,8 @@ export interface ViolationLogEntry {
   actor: string;
   attemptedAmount: bigint;
   reason: string;
+  txHash?: string | null;
+  blockHash?: string | null;
 }
 
 export interface LienStatus {
@@ -125,5 +127,6 @@ export interface ClaimGuardConfig {
   contractAddress: string;
   signerUri?: string; // SURI or seed phrase (e.g. "//Alice" or seed)
   metadataJson?: any;
+  violationsPath?: string; // Persistent JSON path e.g. "./data/violations.json"
 }
 

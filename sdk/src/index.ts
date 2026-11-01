@@ -22,6 +22,73 @@ import {
 
 export * from "./types";
 
+function persistViolation(entry: ViolationLogEntry, violationsPath?: string) {
+  if (typeof window !== "undefined" && window.localStorage) {
+    try {
+      const existingStr = window.localStorage.getItem("claimguard_violations");
+      const list = existingStr ? JSON.parse(existingStr) : [];
+      list.unshift({
+        ...entry,
+        attemptedAmount: entry.attemptedAmount.toString(),
+      });
+      window.localStorage.setItem("claimguard_violations", JSON.stringify(list));
+    } catch {}
+  }
+  if (typeof process !== "undefined" && process.versions?.node) {
+    try {
+      // Dynamic require avoids bundler issues in frontend Vite
+      const fs = eval("require")("fs");
+      const path = eval("require")("path");
+      const filePath = violationsPath || path.resolve(process.cwd(), "data/violations.json");
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      let list = [];
+      if (fs.existsSync(filePath)) {
+        try {
+          list = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        } catch {}
+      }
+      list.unshift({
+        ...entry,
+        attemptedAmount: entry.attemptedAmount.toString(),
+      });
+      fs.writeFileSync(filePath, JSON.stringify(list, null, 2), "utf8");
+    } catch {}
+  }
+}
+
+function loadPersistedViolations(violationsPath?: string): ViolationLogEntry[] {
+  if (typeof window !== "undefined" && window.localStorage) {
+    try {
+      const existingStr = window.localStorage.getItem("claimguard_violations");
+      if (existingStr) {
+        const raw = JSON.parse(existingStr);
+        return raw.map((r: any) => ({
+          ...r,
+          attemptedAmount: BigInt(r.attemptedAmount || 0),
+        }));
+      }
+    } catch {}
+  }
+  if (typeof process !== "undefined" && process.versions?.node) {
+    try {
+      const fs = eval("require")("fs");
+      const path = eval("require")("path");
+      const filePath = violationsPath || path.resolve(process.cwd(), "data/violations.json");
+      if (fs.existsSync(filePath)) {
+        const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        return raw.map((r: any) => ({
+          ...r,
+          attemptedAmount: BigInt(r.attemptedAmount || 0),
+        }));
+      }
+    } catch {}
+  }
+  return [];
+}
+
 /**
  * ClaimGuard TypeScript SDK
  * Enables lenders, DeFi protocols, and suppliers to enforce and verify
@@ -32,6 +99,7 @@ export class ClaimGuard {
   private contractAddress: string;
   private signerUri?: string;
   private metadataJson?: any;
+  private violationsPath?: string;
   private api?: ApiPromise;
   private contract?: ContractPromise;
   private signer?: any;
@@ -42,6 +110,8 @@ export class ClaimGuard {
     this.contractAddress = config.contractAddress;
     this.signerUri = config.signerUri;
     this.metadataJson = config.metadataJson;
+    this.violationsPath = config.violationsPath;
+    this.violationLog = loadPersistedViolations(this.violationsPath);
   }
 
   /**
@@ -196,15 +266,20 @@ export class ClaimGuard {
 
   /**
    * 2. Record a financing lien on a claim.
+   * If options.skipDryRun is true, submits the transaction to the chain directly
+   * so an over-limit double-pledge attempt is recorded in a block with a failed result and real tx hash.
    */
   async pledge(
     claimId: ClaimId,
     lender: string,
-    amount: bigint
-  ): Promise<{ txHash: string; lienId: number }> {
-    const check = await this.checkInvariants(claimId, "pledge", lender, amount);
-    if (!check.allowed) {
-      throw new Error(`[ClaimGuard] Invariant Rejection: ${check.violatedRule} - ${check.reason}`);
+    amount: bigint,
+    options?: { skipDryRun?: boolean }
+  ): Promise<{ txHash: string; lienId?: number; success: boolean; error?: string }> {
+    if (!options?.skipDryRun) {
+      const check = await this.checkInvariants(claimId, "pledge", lender, amount);
+      if (!check.allowed) {
+        throw new Error(`[ClaimGuard] Invariant Rejection: ${check.violatedRule} - ${check.reason}`);
+      }
     }
 
     if (!this.contract || !this.signer || !this.api) {
@@ -226,24 +301,108 @@ export class ClaimGuard {
     return new Promise((resolve, reject) => {
       tx.signAndSend(this.signer, (result: any) => {
         const { status, events = [], dispatchError } = result;
-        if (status.isFinalized) {
+        const txHash = status.isFinalized
+          ? status.asFinalized.toHex()
+          : status.isInBlock
+          ? status.asInBlock.toHex()
+          : "";
+
+        if (status.isFinalized || status.isInBlock) {
           if (dispatchError) {
-            reject(new Error(dispatchError.toString()));
-          } else {
-            let lienId = 1;
-            for (const { event } of events) {
-              if (event.section === "contracts" && event.method === "ContractEmitted") {
-                // LienRecorded event
-              }
+            let errorMsg = dispatchError.toString();
+            if (dispatchError.isModule && this.api) {
+              const decoded = this.api.registry.findMetaError(dispatchError.asModule);
+              errorMsg = `${decoded.section}.${decoded.name}: ${decoded.docs.join(" ")}`;
             }
+            this.logViolation(
+              claimId,
+              "ExceedsAdvanceRate",
+              lender,
+              amount,
+              `On-chain transaction failed: ${errorMsg}`,
+              txHash
+            );
+            if (options?.skipDryRun) {
+              resolve({
+                txHash,
+                success: false,
+                error: errorMsg,
+              });
+            } else {
+              reject(new Error(errorMsg));
+            }
+          } else if (status.isFinalized) {
+            let lienId = 1;
             resolve({
-              txHash: status.asFinalized.toHex(),
+              txHash,
               lienId,
+              success: true,
             });
           }
         }
       }).catch(reject);
     });
+  }
+
+  /**
+   * Authorize a lender to pledge against a claim up to maxAmount (issuer consent).
+   */
+  async approveLender(
+    claimId: ClaimId,
+    lender: string,
+    maxAmount: bigint
+  ): Promise<{ txHash: string }> {
+    if (!this.contract || !this.signer || !this.api) {
+      throw new Error("SDK not initialized with signer or contract");
+    }
+
+    const gasLimit: any = this.api.registry.createType("WeightV2", {
+      refTime: 300_000_000_000n,
+      proofSize: 1_000_000n,
+    });
+
+    const tx = this.contract.tx.approveLender(
+      { gasLimit, storageDepositLimit: null },
+      claimId,
+      lender,
+      maxAmount
+    );
+
+    return new Promise((resolve, reject) => {
+      tx.signAndSend(this.signer, (result: any) => {
+        const { status, dispatchError } = result;
+        if (status.isFinalized) {
+          if (dispatchError) {
+            reject(new Error(dispatchError.toString()));
+          } else {
+            resolve({ txHash: status.asFinalized.toHex() });
+          }
+        }
+      }).catch(reject);
+    });
+  }
+
+  /**
+   * Read approved pledge allowance for a lender on a claim.
+   */
+  async getLenderApproval(claimId: ClaimId, lender: string): Promise<bigint> {
+    if (this.contract && this.api) {
+      const gasLimit: any = this.api.registry.createType("WeightV2", {
+        refTime: 300_000_000_000n,
+        proofSize: 1_000_000n,
+      });
+      const caller = this.getSignerAddress();
+      const res = await this.contract.query.getLenderApproval(
+        caller,
+        { gasLimit },
+        claimId,
+        lender
+      );
+      if (res.result.isOk && res.output) {
+        return BigInt(res.output.toString());
+      }
+    }
+    return 0n;
   }
 
   /**
@@ -304,9 +463,13 @@ export class ClaimGuard {
   }
 
   /**
-   * 4. Query violation log.
+   * 4. Query violation log (reads from persistent storage, falling back to memory).
    */
   getViolationLog(): ViolationLogEntry[] {
+    const persisted = loadPersistedViolations(this.violationsPath);
+    if (persisted.length > 0) {
+      return persisted;
+    }
     return [...this.violationLog];
   }
 
@@ -500,16 +663,22 @@ export class ClaimGuard {
     ruleName: string,
     actor: string,
     attemptedAmount: bigint,
-    reason: string
+    reason: string,
+    txHash?: string | null,
+    blockHash?: string | null
   ): void {
-    this.violationLog.push({
+    const entry: ViolationLogEntry = {
       timestamp: Date.now(),
       claimId,
       ruleName,
       actor,
       attemptedAmount,
       reason,
-    });
+      txHash: txHash || null,
+      blockHash: blockHash || null,
+    };
+    this.violationLog.unshift(entry);
+    persistViolation(entry, this.violationsPath);
   }
 }
 
